@@ -1642,7 +1642,7 @@ def search_archive(title: str, artist: str, dur) -> dict | None:
             name = f.get("name") or ""
             if fmt in ("flac", "24bit flac"):
                 rank = 3
-            elif fmt in ("vbr mp3", "mp3") and str(f.get("bitrate") or "0").isdigit() and int(f["bitrate"]) >= 192:
+            elif fmt in ("vbr mp3", "mp3") and str(f.get("bitrate") or "0").isdigit() and int(str(f.get("bitrate") or "0")) >= 192:
                 rank = 2
             else:
                 continue
@@ -1652,10 +1652,18 @@ def search_archive(title: str, artist: str, dur) -> dict | None:
             if best is None or rank > best[0]:
                 best = (rank, name, fmt)
         if best:
+            # Cover: a front-cover style image in the item, else the item's own thumbnail.
+            imgs = [(f.get("name") or "") for f in meta.get("files") or []
+                    if (f.get("format") or "").lower() in ("jpeg", "png")
+                    and "thumb" not in (f.get("name") or "").lower() and "/" not in (f.get("name") or "")]
+            pick = next((n for n in imgs if re.search(r"cover|front|folder|artwork|album", n, re.I)), None) \
+                or (imgs[0] if imgs else None)
+            cover_url = (f"https://archive.org/download/{urllib.parse.quote(ident)}/{urllib.parse.quote(pick)}"
+                         if pick else f"https://archive.org/services/img/{urllib.parse.quote(ident)}")
             url = f"https://archive.org/download/{urllib.parse.quote(ident)}/{urllib.parse.quote(best[1])}"
             label = "FLAC" if best[0] == 3 else "MP3 (192k+)"
             return {"source": "Internet Archive", "urls": [(label, url)], "album": meta.get("metadata", {}).get("title"),
-                    "year": None, "cover_url": None, "title": title}
+                    "year": None, "cover_url": cover_url, "title": title}
     return None
 
 
