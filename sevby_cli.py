@@ -73,51 +73,35 @@ def is_spotify(s: str) -> bool:
 
 
 def run_job(songs: list[str], out_dir: str, source: str) -> tuple[int, list[str]]:
-    """Process songs one by one: Bandcamp first (if allowed), then YouTube (if allowed)."""
-    use_bc = source != "youtube"
-    use_yt = source != "bandcamp"
+    """Process songs one by one with the same engine as the window: free sources, Bandcamp, YouTube."""
     os.makedirs(out_dir, exist_ok=True)
     sa.HQ_SONGS.clear()
+    opts = {"use_bc": source != "youtube", "use_yt": source != "bandcamp", "free": bool(sa.QUALITY["free"])}
+    state: dict = {}
     ok = 0
+    skipped = 0
     failed: list[str] = []
-    bandcamp_down = False
-    errors = 0
     n = len(songs)
 
     for i, song in enumerate(songs, 1):
         if sa.STOP_EVENT.is_set():
             break
         say(f"[{i}/{n}] {song}")
-        done = False
-
-        if sa.QUALITY["free"]:
-            done = sa.download_free_hq(song, out_dir, say)
-
-        if not done and use_bc:
-            res = sa.search_bandcamp(song, use_api=not bandcamp_down)
-            if res.get("found") and res.get("url"):
-                errors = 0
-                say(f"  -> Bandcamp: {res['url']}")
-                done = sa.download_bandcamp_mp3(res["url"], song, out_dir, say)
-            elif res.get("error"):
-                errors += 1
-                say(f"  -> Bandcamp search failed: {res['error']}")
-                if errors >= 3 and not bandcamp_down:
-                    bandcamp_down = True
-                    say("  (Bandcamp search keeps refusing - trying artist pages only from now on)")
-            else:
-                errors = 0
-                say("  -> not on Bandcamp")
-
-        if not done and use_yt and not sa.STOP_EVENT.is_set():
-            done = sa.download_youtube_mp3(song, out_dir, say)
-
+        res = sa.process_song(song, out_dir, opts, state, say)
         if sa.STOP_EVENT.is_set():
             break
-        if done:
+        st = res.get("status")
+        if st == "ok":
             ok += 1
+            say(f"  OK: {res.get('note', '')}")
+        elif st in ("skip", "dup"):
+            skipped += 1
+            say(f"  skipped: {res.get('note', '')}")
         else:
             failed.append(song)
+            say(f"  FAILED: {res.get('note', '')}")
+    if skipped:
+        say(f"{skipped} song(s) were already in the folder.")
     if sa.QUALITY["best"]:
         sa.write_hq_links(out_dir, say)
     return ok, failed

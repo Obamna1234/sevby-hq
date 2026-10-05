@@ -45,6 +45,24 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+# An updated yt-dlp (downloaded from About & updates) wins over the copy bundled in the app.
+YTDLP_UPDATE_DIR = Path.home() / ".sevby_hq_ytdlp"
+YTDLP_ACTIVE = ""
+try:
+    _upd = YTDLP_UPDATE_DIR / "yt-dlp"
+    if _upd.is_file():
+        import importlib.machinery
+
+        sys.path.insert(0, str(_upd))
+        if getattr(sys, "frozen", False):
+            # packaged apps look inside their own bundle first; make the path search go first for this
+            if importlib.machinery.PathFinder in sys.meta_path:
+                sys.meta_path.remove(importlib.machinery.PathFinder)
+            sys.meta_path.insert(0, importlib.machinery.PathFinder)
+        YTDLP_ACTIVE = str(_upd)
+except Exception:
+    YTDLP_ACTIVE = ""
+
 # yt-dlp as a Python module (works inside the packaged .exe, no PATH needed)
 try:
     import yt_dlp
@@ -251,6 +269,7 @@ def _norm_fuzzy(data: dict) -> list[dict]:
             "type": r.get("type") or "",
             "name": r.get("name") or "",
             "band_name": r.get("band_name") or "",
+            "album_name": r.get("album_name") or "",
             "url": r.get("url") or "",
         }
         for r in (data.get("results") or [])
@@ -270,6 +289,7 @@ def _norm_bcsearch(data) -> list[dict]:
                 "type": r.get("type") or "",
                 "name": r.get("name") or "",
                 "band_name": r.get("band_name") or "",
+                "album_name": r.get("album_name") or "",
                 "url": url,
             }
         )
@@ -400,7 +420,6 @@ def _guess_bandcamp(query: str) -> dict | None:
         return None
     want = _norm_text(re.sub(r"\s*[\(\[][^)\]]*[\)\]]", "", title))
     artist_words = [w for w in re.split(r"[\s,&]+", artist.lower()) if len(w) > 1]
-    wants_remix = "remix" in title.lower()
     for sub in _bc_subdomains(artist):
         for slug in _bc_title_slugs(title):
             if STOP_EVENT.is_set():
@@ -416,7 +435,7 @@ def _guess_bandcamp(query: str) -> dict | None:
                 continue
             title_ok = want in got_title or got_title in want
             artist_ok = any(w in got_artist for w in artist_words) or sub in _norm_text(got_artist)
-            if wants_remix and "remix" not in raw_title.lower():
+            if version_set(raw_title) != version_set(title):
                 continue
             if title_ok and artist_ok:
                 return {
@@ -451,12 +470,8 @@ def search_bandcamp(query: str, use_api: bool = True) -> dict:
             if err2 and not tracks:
                 return {"found": False, "error": err2}
 
-    tracks = [r for r in tracks if _artist_matches(r, query)]
-    if not tracks:
-        return {"found": False}
-
-    best = max(tracks, key=lambda r: bc_score(r, query))
-    if bc_score(best, query) < 20:
+    best = bc_choose(tracks, query)
+    if not best:
         return {"found": False}
     url = fix_bc_url(best.get("url") or "")
     if not url:
@@ -879,6 +894,7 @@ _LAST_INFO: dict = {}  # metadata of the most recent yt-dlp download (used for c
 
 # "Best available" keeps YouTube's original audio (M4A/AAC) instead of re-encoding to MP3.
 QUALITY = {"best": True, "free": True, "jamendo_id": ""}
+LAST_FREE: dict = {}
 HQ_SONGS: list[str] = []  # songs that came from YouTube in this run (for the "find better quality" file)
 
 
@@ -1136,6 +1152,21 @@ def _download(
     ):
         ok, err2 = runner(target, out_dir, safe, True, embed)
         err = err2 or err
+    if not ok and not STOP_EVENT.is_set() and _NET_ERR_RE.search(err or ""):
+        for delay in (5, 15):
+            if log:
+                log(f"  Network problem \u2013 retrying in {delay} s\u2026")
+            for _ in range(delay * 5):
+                if STOP_EVENT.is_set():
+                    break
+                time.sleep(0.2)
+            if STOP_EVENT.is_set():
+                break
+            ok, err = runner(target, out_dir, safe, False, embed)
+            if ok or not _NET_ERR_RE.search(err or ""):
+                break
+        if not ok and _NET_ERR_RE.search(err or "") and log:
+            log("  Tip: the internet connection dropped. Run the list again later.")
     if STOP_EVENT.is_set() and not ok:
         _cleanup_partial(out_dir, safe)
         err = "stopped"
@@ -1145,10 +1176,7 @@ def _download(
 
 
 def _already_exists(out_dir: str, safe: str) -> bool:
-    return any(
-        os.path.exists(os.path.join(out_dir, f"{safe}.{ext}"))
-        for ext in ("mp3", "m4a", "flac", "webm", "opus")
-    )
+    return existing_song(out_dir, safe) is not None
 
 
 # \u2500\u2500 Tags & cover art \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -1160,14 +1188,55 @@ def meta_for(song: str) -> dict:
     artist, title = _split_query(song)
     meta = {"title": title}
     if artist:
-        meta["artist"] = artist
+        meta["artist"] = re.sub(r"\s*,\s*", ", ", artist)
     return meta
 
 
+def _crop_box(src: str) -> tuple[int, int, int, int, int, int] | None:
+    """Find black bars with ffmpeg's cropdetect. Returns (W, H, x, y, iw, ih) or None."""
+    r = _run_ff(["-loop", "1", "-framerate", "10", "-t", "0.8", "-i", src,
+                 "-vf", "cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"])
+    if r is None:
+        return None
+    text = (r.stderr or b"").decode("utf-8", errors="replace")
+    crops = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", text)
+    size = re.search(r"Stream #\d+:\d+.*?Video:.*?, (\d{2,5})x(\d{2,5})", text)
+    if not crops or not size:
+        return None
+    w, h, x, y = (int(v) for v in crops[-1])
+    return w, h, x, y, int(size.group(1)), int(size.group(2))
+
+
 def _square_jpg(src: str) -> str | None:
-    """Centre-crop an image to a square (YouTube thumbnails are 16:9 with black bars)."""
+    """Make a square cover from a video thumbnail: trim black bars that are the same on both sides,
+    then crop the centre square if the picture is nearly square, else show it whole on a black square."""
     dst = os.path.join(tempfile.gettempdir(), f"sevby_square_{os.getpid()}.jpg")
-    r = _run_ff(["-y", "-i", src, "-vf", "crop=min(iw\\,ih):min(iw\\,ih)", "-q:v", "2", dst])
+    vf = []
+    box = _crop_box(src)
+    cw = ch = None
+    if box:
+        w, h, x, y, iw, ih = box
+        left, right, top, bottom = x, iw - (x + w), y, ih - (y + h)
+        tx = x if (abs(left - right) <= 3 and left >= iw * 0.02) else 0
+        ty = y if (abs(top - bottom) <= 3 and top >= ih * 0.02) else 0
+        cw, ch = iw - 2 * tx, ih - 2 * ty
+        if tx or ty:
+            vf.append(f"crop={cw}:{ch}:{tx}:{ty}")
+    if cw is None:
+        r0 = _run_ff(["-i", src])
+        m = re.search(r"Video:.*?, (\d{2,5})x(\d{2,5})", (r0.stderr or b"").decode("utf-8", "replace")) if r0 else None
+        if m:
+            cw, ch = int(m.group(1)), int(m.group(2))
+    if cw and ch:
+        if cw / ch <= 1.25 and ch / cw <= 1.25:
+            side = min(cw, ch)
+            vf.append(f"crop={side}:{side}")
+        else:
+            side = max(cw, ch)
+            vf.append(f"scale={side}:{side}:force_original_aspect_ratio=decrease,pad={side}:{side}:(ow-iw)/2:(oh-ih)/2:black")
+    else:
+        vf.append("crop=min(iw\\,ih):min(iw\\,ih)")
+    r = _run_ff(["-y", "-i", src, "-vf", ",".join(vf), "-frames:v", "1", "-q:v", "2", dst])
     return dst if r is not None and r.returncode == 0 and os.path.isfile(dst) else None
 
 
@@ -1447,9 +1516,6 @@ def download_bandcamp_mp3(bc_url: str, query: str, out_dir: str, log) -> bool:
         return True
     ok, err = _download(bc_url, out_dir, safe, allow_cookies=False, log=log)
     if ok:
-        meta = SONG_META.get(query)
-        if meta and meta.get("album"):  # Spotify knows this track: make the tags consistent
-            _apply_tags(os.path.join(out_dir, f"{safe}.mp3"), meta, None, wipe=False)
         log(f"  OK (Bandcamp) \u2192 {safe}.mp3" + ("  [Bandcamp stream, 128 kbps MP3]" if QUALITY["best"] else ""))
     elif err == "stopped":
         log("  Stopped.")
@@ -1463,7 +1529,13 @@ def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True
     if _already_exists(out_dir, safe):
         log(f"  SKIP (exists): {safe}")
         return True
-    meta = meta_for(query)
+    meta = dict(meta_for(query))
+    if query not in SONG_META and meta.get("artist"):
+        it = itunes_lookup(meta["artist"], meta.get("title") or "", query)
+        if it:
+            for k, v in it.items():
+                if v and not meta.get(k):
+                    meta[k] = v
 
     # Pick the best-matching video (right length, not a live/remix version) instead of the first hit.
     targets: list[str] = []
@@ -1506,6 +1578,333 @@ def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True
     return ok
 
 
+# -- Matching rules shared with the Android app: Bandcamp choice, iTunes album info, skip rules ------
+
+VERSION_WORDS = ("remix", "live", "instrumental", "acoustic", "cover", "edit", "mix", "version", "karaoke")
+_COMPILATION_RE = re.compile(
+    r"compilation|\bvol\b|volume|various|sampler|presents|best of|collection|anthology|\b\d{2,3}\b", re.I)
+_NET_ERR_RE = re.compile(
+    r"getaddrinfo|name or service not known|temporary failure|timed out|timeout|connection reset|"
+    r"connection aborted|network is unreachable|remote end closed|urlopen error|connection refused|"
+    r"no route to host|server disconnected", re.I)
+
+
+def _alnum(s: str) -> str:
+    """Letters and digits only, lower-case (so 'M.A.D.E.S' == 'mades')."""
+    return re.sub(r"[\W_]+", "", (s or "").lower())
+
+
+def clean_title(t: str) -> str:
+    """Drop (feat. ...), (Remastered), (Original Mix), (Explicit) ... and a trailing '- 2011 Remaster'."""
+    t = re.sub(
+        r"[\(\[][^\)\]]*\b(feat|ft|featuring|remaster|remastered|original mix|original version|explicit|clean)\b[^\)\]]*[\)\]]",
+        " ", t or "", flags=re.I)
+    t = re.sub(r"\s+-\s+(\d{4}\s+)?remaster(ed)?(\s+\d{4})?\s*$", "", t, flags=re.I)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def artists_of(artist: str) -> list[str]:
+    parts = re.split(r"\s*[,&]\s*|\s+(?:feat\.?|ft\.?|featuring|x|and)\s+", artist or "", flags=re.I)
+    out = [a for a in (_alnum(x) for x in parts) if a]
+    return out or ([_alnum(artist)] if _alnum(artist) else [])
+
+
+def version_set(text: str) -> set[str]:
+    low = re.sub(r"\boriginal\s+(mix|version)\b", " ", (text or "").lower())
+    return {w for w in VERSION_WORDS if re.search(r"\b" + w + r"\b", low)}
+
+
+def _title_eq(a: str, b: str) -> bool:
+    return bool(_alnum(clean_title(a))) and _alnum(clean_title(a)) == _alnum(clean_title(b))
+
+
+def _strip_artist_prefix(name: str, artists: list[str]) -> str:
+    m = re.match(r"^(.*?)\s+[-\u2013\u2014]\s+(.+)$", name or "")
+    if m and any(a and (a in _alnum(m.group(1)) or _alnum(m.group(1)) in a) for a in artists if _alnum(m.group(1))):
+        return m.group(2)
+    return name or ""
+
+
+def _host_label(url: str) -> str:
+    m = re.match(r"https?://([^./]+)\.", url or "")
+    return m.group(1).lower() if m else ""
+
+
+def bc_choose(results: list[dict], query: str) -> dict | None:
+    """Pick the right Bandcamp TRACK: same title, same artist, same kind of version."""
+    artist, title = _split_query(query)
+    if not artist or not title:
+        return None  # a line without an artist is never matched (it goes to YouTube)
+    want_artists = artists_of(artist)
+    want_ver = version_set(title)
+    best, best_score = None, -999.0
+    for i, r in enumerate(results):
+        url = r.get("url") or ""
+        if "/track/" not in url:
+            continue
+        name = _strip_artist_prefix(r.get("name") or "", want_artists)
+        if not _title_eq(name, title):
+            continue
+        band = _alnum(r.get("band_name") or "")
+        if not band or not any(a in band or band in a for a in want_artists):
+            continue
+        if version_set(name) != want_ver:
+            continue
+        score = -0.001 * i
+        host = _host_label(url)
+        if host and any(host == a or host in a or a in host for a in want_artists if len(a) > 2):
+            score += 10
+        album = r.get("album_name") or ""
+        if album:
+            score += -5 if _COMPILATION_RE.search(album) else 2
+        if score > best_score:
+            best, best_score = r, score
+    return best
+
+
+_ITUNES_CACHE: dict = {}
+
+
+def _device_country() -> str:
+    try:
+        import locale
+
+        loc = (locale.getlocale()[0] or locale.getdefaultlocale()[0] or "")
+        m = re.search(r"[_-]([A-Za-z]{2})$", loc)
+        if m:
+            return m.group(1).upper()
+        names = {"australia": "AU", "united states": "US", "united kingdom": "GB", "canada": "CA",
+                 "germany": "DE", "france": "FR", "new zealand": "NZ", "ireland": "IE"}
+        for k, v in names.items():
+            if k in loc.lower():
+                return v
+    except Exception:
+        pass
+    return "US"
+
+
+def itunes_choose(results: list[dict], artist: str, title: str, line: str) -> dict | None:
+    want_artists = artists_of(artist)
+    want_ver = version_set(title)
+    wants_live = "live" in want_ver
+    best, best_score = None, -999.0
+    for i, r in enumerate(results):
+        if not _title_eq(r.get("trackName", ""), title):
+            continue
+        ra = _alnum(r.get("artistName", ""))
+        if not ra or not any(a in ra or ra in a for a in want_artists):
+            continue
+        if version_set(r.get("trackName", "")) != want_ver:
+            continue
+        album = r.get("collectionName") or ""
+        if re.search(r"\blive\b|unplugged|in concert", album, re.I) and not wants_live:
+            continue
+        score = 0.0
+        cart = (r.get("collectionArtistName") or "")
+        if cart and (cart.lower().startswith("various") or not any(
+                a in _alnum(cart) or _alnum(cart) in a for a in want_artists)):
+            score -= 10
+        if _COMPILATION_RE.search(album):
+            score -= 5
+        if re.search(r"expanded|deluxe|anniversary|remaster|reissue|special edition|bonus", album, re.I):
+            score -= 1
+        if album and not re.search(r"\s-\s(single|ep)\s*$", album, re.I):
+            score += 2
+        score -= 0.0001 * i
+        rd = (r.get("releaseDate") or "")[:10]
+        key = (score, "".join(reversed(rd)) if False else 0)
+        # ties go to the earliest release
+        if score > best_score or (abs(score - best_score) < 0.001 and rd and best and rd < (best.get("releaseDate") or "9")[:10]):
+            best, best_score = r, score
+    return best
+
+
+def itunes_lookup(artist: str, title: str, line: str = "") -> dict | None:
+    """Album / year / track / cover / length for a song from the iTunes Search API (no key needed)."""
+    key = (_alnum(artist), _alnum(title))
+    if key in _ITUNES_CACHE:
+        return _ITUNES_CACHE[key]
+    found = None
+    countries = [_device_country()] + (["US"] if _device_country() != "US" else [])
+    for cc in countries:
+        if STOP_EVENT.is_set():
+            break
+        q = urllib.parse.urlencode({"term": f"{artist} {clean_title(title)}", "media": "music",
+                                    "entity": "song", "limit": 25, "country": cc})
+        data = None
+        for delay in (0, 5, 15):
+            if delay:
+                time.sleep(delay)
+            data = _free_json("https://itunes.apple.com/search?" + q)
+            if data is not None:
+                break
+        r = itunes_choose((data or {}).get("results") or [], artist, title, line)
+        if r:
+            album = re.sub(r"\s-\s(Single|EP)\s*$", "", r.get("collectionName") or "", flags=re.I).strip()
+            art = r.get("artworkUrl100") or ""
+            found = {
+                "album": album or None,
+                "year": (r.get("releaseDate") or "")[:4] or None,
+                "track": r.get("trackNumber") or None,
+                "track_total": r.get("trackCount") or None,
+                "duration": (r.get("trackTimeMillis") or 0) / 1000.0 or None,
+                "cover_url": re.sub(r"/\d+x\d+bb", "/1000x1000bb", art) if art else None,
+            }
+            break
+    _ITUNES_CACHE[key] = found
+    return found
+
+
+def read_tags(path: str) -> dict:
+    """Read album / date / track from a file with the bundled ffmpeg (it prints them when probing)."""
+    r = _run_ff(["-i", path])
+    out = {}
+    if r is None:
+        return out
+    text = (r.stderr or b"").decode("utf-8", errors="replace")
+    for key in ("album", "date", "track", "title", "artist"):
+        m = re.search(r"^\s+" + key + r"\s*:\s*(.+)$", text, re.M | re.I)
+        if m:
+            out[key] = m.group(1).strip()
+    return out
+
+
+MIN_BYTES = 100 * 1024
+
+
+def existing_song(out_dir: str, safe: str) -> str | None:
+    """A finished copy of this song already in the folder (>= 100 KB). Smaller files are leftovers of an
+    interrupted run: they are deleted so the song gets downloaded again."""
+    found = None
+    for ext in ("mp3", "m4a", "flac"):
+        p = os.path.join(out_dir, f"{safe}.{ext}")
+        if os.path.isfile(p):
+            try:
+                if os.path.getsize(p) >= MIN_BYTES:
+                    found = found or p
+                else:
+                    os.remove(p)
+            except OSError:
+                pass
+    return found
+
+
+def retag_bandcamp(out_dir: str, safe: str, query: str) -> tuple[str, str]:
+    """Title and artist always come from the user's line. Album / year / track: Bandcamp, then iTunes.
+    Returns (album, year) for the log."""
+    mp3 = os.path.join(out_dir, f"{safe}.mp3")
+    if not os.path.isfile(mp3):
+        return "", ""
+    meta = dict(meta_for(query))
+    tags = read_tags(mp3)
+    album = tags.get("album") or meta.get("album") or ""
+    year = (tags.get("date") or "")[:4] or meta.get("year") or ""
+    track = meta.get("track")
+    total = meta.get("track_total")
+    if not track and tags.get("track"):
+        m = re.match(r"(\d+)(?:\s*/\s*(\d+))?", tags["track"])
+        if m:
+            track, total = int(m.group(1)), (int(m.group(2)) if m.group(2) else None)
+    if not album or not year:
+        it = itunes_lookup(meta.get("artist") or "", meta.get("title") or "", query) if meta.get("artist") else None
+        if it:
+            album = album or it.get("album") or ""
+            year = year or it.get("year") or ""
+            track = track or it.get("track")
+            total = total or it.get("track_total")
+    meta.update(album=album or meta.get("title"), year=year or None, track=track, track_total=total)
+    _apply_tags(mp3, meta, None, wipe=True)
+    return (album or meta.get("title") or ""), year
+
+
+def _fmt_album(album: str, year: str) -> str:
+    if album and year:
+        return f"{album} ({year})"
+    return album or year or ""
+
+
+def _src_result(res: dict) -> str:
+    return res.get("note") or ""
+
+
+def process_song(song: str, out_dir: str, opts: dict, state: dict, say, step=lambda _t: None) -> dict:
+    """One song, start to finish. Used by the window and the command-line version.
+    opts: use_bc, use_yt, free.  state: seen (set), bc_errors (int), bandcamp_down (bool).
+    Returns {'status': ok|skip|dup|fail, 'source': ..., 'note': ..., 'path': ...}."""
+    safe = sanitize_filename(song)
+    key = safe.lower()
+    if key in state.setdefault("seen", set()):
+        return {"status": "dup", "source": None, "note": "listed twice"}
+    state["seen"].add(key)
+
+    step("Checking the folder\u2026")
+    if existing_song(out_dir, safe):
+        return {"status": "skip", "source": None, "note": "already in folder"}
+
+    # 1. free, legal lossless sources
+    if opts.get("free"):
+        step("Checking Jamendo / Internet Archive\u2026")
+        if download_free_hq(song, out_dir, say):
+            p = existing_song(out_dir, safe) or ""
+            kind = p.rsplit(".", 1)[-1].upper() if p else ""
+            src = LAST_FREE.get("source") or "Internet Archive"
+            return {"status": "ok", "source": src, "path": p, "note": f"{src} \u00b7 {kind}, Creative Commons"}
+        if STOP_EVENT.is_set():
+            return {"status": "fail", "source": None, "note": "stopped"}
+
+    # 2. Bandcamp
+    bc_note = ""
+    if opts.get("use_bc"):
+        step("Searching Bandcamp\u2026")
+        if DEBUG.get("bc_blocked"):
+            res = {"found": False, "error": "pretend-blocked (test switch)"}
+        else:
+            res = search_bandcamp(song, use_api=not state.get("bandcamp_down"))
+        if res.get("found") and res.get("url"):
+            state["bc_errors"] = 0
+            say(f"  -> Bandcamp: {res['url']}")
+            step("Downloading from Bandcamp\u2026")
+            if download_bandcamp_mp3(res["url"], song, out_dir, say):
+                step("Looking up album info\u2026")
+                album, year = retag_bandcamp(out_dir, safe, song)
+                return {"status": "ok", "source": "Bandcamp", "path": existing_song(out_dir, safe) or "",
+                        "note": "Bandcamp" + (f" \u00b7 {_fmt_album(album, year)}" if album or year else "")}
+            if STOP_EVENT.is_set():
+                return {"status": "fail", "source": None, "note": "stopped"}
+            bc_note = " (Bandcamp download failed)"
+        elif res.get("error"):
+            state["bc_errors"] = state.get("bc_errors", 0) + 1
+            say(f"  -> Bandcamp search failed: {res['error']}")
+            bc_note = " (Bandcamp blocked)"
+            if state["bc_errors"] >= 3 and not state.get("bandcamp_down"):
+                state["bandcamp_down"] = True
+                say("  (Bandcamp search keeps refusing - trying artist pages only from now on)")
+        else:
+            state["bc_errors"] = 0
+            say("  -> not on Bandcamp")
+            bc_note = " (not on Bandcamp)"
+
+    # 3. YouTube
+    if opts.get("use_yt") and not STOP_EVENT.is_set():
+        step("Searching YouTube\u2026")
+        if download_youtube_mp3(song, out_dir, say):
+            p = existing_song(out_dir, safe) or ""
+            tags = read_tags(p) if p else {}
+            album = tags.get("album") or ""
+            year = (tags.get("date") or "")[:4]
+            extra = _fmt_album(album, year)
+            return {"status": "ok", "source": "YouTube", "path": p,
+                    "note": "YouTube" + (f" \u00b7 {extra}" if extra else "") + bc_note}
+        if STOP_EVENT.is_set():
+            return {"status": "fail", "source": None, "note": "stopped"}
+        return {"status": "fail", "source": None,
+                "note": "not found on YouTube" if "not on" in bc_note or not opts.get("use_bc") else "couldn't be downloaded"}
+    if opts.get("use_bc"):
+        return {"status": "fail", "source": None, "note": bc_note.strip(" ()") or "not on Bandcamp"}
+    return {"status": "fail", "source": None, "note": "no source selected"}
+
+
+
 # -- Free & legal lossless sources: Jamendo and Internet Archive (Creative Commons only) ----------
 
 _FREE_UA = "SEVBY-HQ/" + VERSION + " (https://github.com/Obamna1234/sevby-hq)"
@@ -1545,7 +1944,7 @@ def _http_get(url: str, timeout: int = 20) -> bytes | None:
         return None
 
 
-def _http_json(url: str):
+def _free_json(url: str):
     data = _http_get(url)
     if not data:
         return None
@@ -1603,7 +2002,7 @@ def search_jamendo(title: str, artist: str, dur, client_id: str) -> dict | None:
         "client_id": client_id, "format": "json", "limit": 8, "namesearch": title,
         "audiodownload_allowed": "true", "imagesize": 600,
     })
-    data = _http_json("https://api.jamendo.com/v3.0/tracks/?" + q)
+    data = _free_json("https://api.jamendo.com/v3.0/tracks/?" + q)
     for t in (data or {}).get("results") or []:
         if not t.get("audiodownload_allowed", True):
             continue
@@ -1629,11 +2028,11 @@ def search_archive(title: str, artist: str, dur) -> dict | None:
     q = (f'creator:("{artist}") AND mediatype:audio AND licenseurl:(*creativecommons*)')
     params = urllib.parse.urlencode({"q": q, "fl[]": ["identifier", "title", "creator"],
                                      "rows": 6, "output": "json"}, doseq=True)
-    data = _http_json("https://archive.org/advancedsearch.php?" + params)
+    data = _free_json("https://archive.org/advancedsearch.php?" + params)
     docs = ((data or {}).get("response") or {}).get("docs") or []
     for d in docs[:4]:
         ident = d.get("identifier")
-        meta = _http_json(f"https://archive.org/metadata/{urllib.parse.quote(ident or '')}") if ident else None
+        meta = _free_json(f"https://archive.org/metadata/{urllib.parse.quote(ident or '')}") if ident else None
         if not meta:
             continue
         best = None
@@ -1756,6 +2155,7 @@ def download_free_hq(query: str, out_dir: str, log) -> bool:
                 elif not cover:
                     log("  Note: no cover art could be found for this track.")
                 real = "FLAC" if kind == "flac" else "MP3 (V0 / high bitrate)"
+                LAST_FREE["source"] = cand["source"]
                 log(f"  OK ({cand['source']}) -> {safe}.{kind}  [{cand['source']}, {real}, Creative Commons]")
                 if cand.get("page"):
                     log(f"  Credit: this track is on Jamendo - {cand['page']}")
@@ -1784,286 +2184,413 @@ else:
         pass
 
 
+# -- Colours (same layout as the Android app, in HQ gold) --------------------------------------------
+C_BG = "#141416"
+C_SURFACE = "#1E1E22"
+C_TEXT = "#F2F2F2"
+C_MUTED = "#9A9AA2"
+C_ACCENT = "#E5B93C"
+C_ACCENT_H = "#C99B22"
+C_ON_ACCENT = "#141416"
+C_ERR = "#FF6B6B"
+C_ERR_BG = "#C94A4A"
+
+# Test switches (About -> Advanced)
+DEBUG = {"bc_blocked": False}
+
+
+# -- yt-dlp version / updates ---------------------------------------------------------------------
+def ytdlp_version() -> str:
+    try:
+        return str(yt_dlp.version.__version__)
+    except Exception:
+        return "not installed"
+
+
+def ver_tuple(v: str) -> tuple:
+    """'2026.08.19.1' -> (2026, 8, 19, 1), compared number by number."""
+    out = []
+    for part in re.split(r"[.\-]", str(v or "")):
+        m = re.match(r"\d+", part)
+        out.append(int(m.group()) if m else 0)
+    return tuple(out)
+
+
+def ytdlp_latest_tag() -> str | None:
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+            headers={"User-Agent": "SEVBY-HQ", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8")).get("tag_name") or None
+    except Exception:
+        return None
+
+
+def download_ytdlp_update(tag: str) -> tuple[bool, str]:
+    """Download the official yt-dlp release file into the user's folder. It is picked up on next start."""
+    try:
+        YTDLP_UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+        dest = YTDLP_UPDATE_DIR / "yt-dlp"
+        tmp = YTDLP_UPDATE_DIR / "yt-dlp.part"
+        url = f"https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/yt-dlp"
+        req = urllib.request.Request(url, headers={"User-Agent": "SEVBY-HQ"})
+        with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        import zipfile
+
+        if not zipfile.is_zipfile(tmp):
+            tmp.unlink(missing_ok=True)
+            return False, "The download wasn't a valid yt-dlp file. Try again later."
+        os.replace(tmp, dest)
+        return True, "ok"
+    except Exception as e:
+        return False, f"Couldn't download the update ({e})."
+
+
+def diagnostics_text() -> str:
+    lines = [
+        f"{APP_NAME} {VERSION}",
+        f"Python {sys.version.split()[0]} on {sys.platform}" + (" (packaged app)" if getattr(sys, "frozen", False) else ""),
+        f"yt-dlp {ytdlp_version()}" + (f"  [updated copy: {YTDLP_ACTIVE}]" if YTDLP_ACTIVE else "  [bundled copy]"),
+        f"ffmpeg: {ffmpeg_path()}",
+    ]
+    try:
+        out = subprocess.run([ffmpeg_path(), "-version"], capture_output=True, text=True, timeout=10).stdout
+        lines.append("  " + (out.splitlines()[0] if out else "no output"))
+    except Exception as e:
+        lines.append(f"  ffmpeg failed to run: {e}")
+    lines.append(f"Jamendo key: {'set' if load_config().get('jamendo_id') else 'not set'}")
+    lines.append(f"Drag and drop: {'yes' if _HAS_DND else 'no'}")
+    lines.append(f"Log file: {LOG_PATH}")
+    return "\n".join(lines)
+
+
+def network_test_text() -> str:
+    tests = [
+        ("Bandcamp", "https://bandcamp.com/"),
+        ("YouTube", "https://www.youtube.com/"),
+        ("Jamendo", "https://api.jamendo.com/v3.0/"),
+        ("Internet Archive", "https://archive.org/"),
+        ("iTunes", "https://itunes.apple.com/search?term=test&limit=1"),
+        ("GitHub", "https://api.github.com/"),
+    ]
+    out = []
+    for name, url in tests:
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                out.append(f"{name}: OK ({int((time.time() - t0) * 1000)} ms)")
+        except urllib.error.HTTPError as e:
+            out.append(f"{name}: reachable (HTTP {e.code})")
+        except Exception as e:
+            out.append(f"{name}: FAILED ({str(e)[:50]})")
+    return "\n".join(out)
+
+
 class SevbyApp(_SevbyBase):
+    SOURCE_CHOICES = (
+        ("Both", "Bandcamp + YouTube", "Bandcamp first, YouTube for anything Bandcamp doesn't have"),
+        ("Bandcamp only", "Bandcamp only", "Songs that aren't on Bandcamp are skipped"),
+        ("YouTube only", "YouTube only", "Everything comes from YouTube"),
+    )
+    QUALITIES = ("Best available (M4A)", "Standard (MP3)")
+
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} v{VERSION}: Playlist to MP3")
         self._apply_icon(self)
-        self.minsize(580, 720)
-        self._center_window(680, 800)
+        self.configure(fg_color=C_BG)
+        self.minsize(640, 700)
+        self._center_window(720, 900)
 
         cfg = load_config()
-        self._total_steps = 0
-        self._done_steps = 0
-        self.run_mode: str | None = None  # which mode the running job belongs to (picks its log box)
+        self.run_mode: str | None = None  # which mode the running job belongs to
+        self.running = False
         self._job: dict | None = None
-        self.failed: list[str] = []
-        self.queue: list[dict] = []
+        self.failed_items: list[tuple[str, str, dict]] = []  # (song, folder, job) of the last finished run
+        self.queue: list[dict] = list(cfg.get("queue") or [])
+        for j in self.queue:
+            j.pop("_running", None)
         self._loaded_name = ""  # name of the .txt file last loaded (used to name its queue folder)
+        self._cur_start = None  # index in the song list where the current song's entry begins
+        self._list_i, self._list_n = 1, 1
+        self._counts = {"ok": 0, "skip": 0, "fail": 0}
+        self._ytdlp_latest: str | None = None
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Header
-        ctk.CTkLabel(self, text="SEVBY HQ", font=ctk.CTkFont(size=28, weight="bold")).pack(
-            pady=(16, 2)
-        )
-        ctk.CTkLabel(
-            self,
-            text="Bandcamp first \u00b7 YouTube for the rest",
-            font=ctk.CTkFont(size=12),
-            text_color="gray70",
-        ).pack(pady=(0, 12))
+        page = ctk.CTkScrollableFrame(self, fg_color=C_BG, corner_radius=0)
+        page.pack(fill="both", expand=True)
+        self.page = page
 
-        # Mode switch
+        # -- Header ---------------------------------------------------------------------------
+        head = ctk.CTkFrame(page, fg_color="transparent")
+        head.pack(fill="x", padx=22, pady=(14, 0))
+        ctk.CTkLabel(head, text="SEVBY HQ", text_color=C_ACCENT,
+                     font=ctk.CTkFont(size=28, weight="bold")).pack(side="left")
+        ctk.CTkButton(head, text="About & updates", width=130, height=30, fg_color="transparent",
+                      border_width=1, border_color=C_MUTED, text_color=C_TEXT, hover_color=C_SURFACE,
+                      command=self.show_about).pack(side="right")
+        self.status_label = ctk.CTkLabel(page, text="", anchor="w", text_color=C_MUTED,
+                                         font=ctk.CTkFont(size=11))
+        self.status_label.pack(fill="x", padx=24, pady=(0, 4))
+        self.banner = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=8)  # shown when yt-dlp is outdated
+        self.banner_label = ctk.CTkLabel(self.banner, text="", anchor="w", text_color=C_ACCENT)
+        self.banner_label.pack(side="left", padx=12, pady=8)
+        ctk.CTkButton(self.banner, text="Update", width=80, height=28, fg_color=C_ACCENT,
+                      hover_color=C_ACCENT_H, text_color=C_ON_ACCENT,
+                      command=self.show_about).pack(side="right", padx=10, pady=6)
+
+        # -- Mode switch ----------------------------------------------------------------------
         self.mode = ctk.StringVar(value=cfg.get("last_mode") if cfg.get("last_mode") in ("txt", "spotify") else "txt")
-        mode_frame = ctk.CTkFrame(self, fg_color="transparent")
-        mode_frame.pack(fill="x", padx=28)
-        ctk.CTkRadioButton(
-            mode_frame, text="Song list / .txt file", variable=self.mode, value="txt",
-            command=self._switch_mode
-        ).pack(side="left", padx=(0, 20))
-        ctk.CTkRadioButton(
-            mode_frame, text="Spotify playlist link", variable=self.mode, value="spotify",
-            command=self._switch_mode
-        ).pack(side="left")
+        mode_frame = ctk.CTkFrame(page, fg_color="transparent")
+        mode_frame.pack(fill="x", padx=22, pady=(6, 0))
+        self.mode_radios = [
+            ctk.CTkRadioButton(mode_frame, text="Song list / .txt file", variable=self.mode, value="txt",
+                               command=self._switch_mode, fg_color=C_ACCENT, hover_color=C_ACCENT_H),
+            ctk.CTkRadioButton(mode_frame, text="Spotify playlist link", variable=self.mode, value="spotify",
+                               command=self._switch_mode, fg_color=C_ACCENT, hover_color=C_ACCENT_H),
+        ]
+        self.mode_radios[0].pack(side="left", padx=(0, 20))
+        self.mode_radios[1].pack(side="left")
 
-        # --- TXT mode ---
-        self.txt_frame = ctk.CTkFrame(self)
-        self.txt_frame.pack(fill="x", padx=28, pady=(12, 0))
-
-        ctk.CTkLabel(
-            self.txt_frame,
-            text="Paste songs (Artist - Title), load a file (.txt, .csv, .m3u), or drop it here:",
-        ).pack(anchor="w", padx=12, pady=(10, 4))
-        self.songs_box = ctk.CTkTextbox(self.txt_frame, height=110)
-        self.songs_box.pack(fill="x", padx=12, pady=4)
+        # -- Song list card -------------------------------------------------------------------
+        self.txt_frame = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=10)
+        self.songs_box = ctk.CTkTextbox(self.txt_frame, height=130, fg_color=C_BG, border_width=1,
+                                        border_color="#33333a")
+        self.songs_box.pack(fill="x", padx=12, pady=(12, 6))
+        self.hint = ctk.CTkLabel(self.songs_box, text="Paste your songs here, one per line:  Artist - Title",
+                                 text_color=C_MUTED, font=ctk.CTkFont(size=12))
+        self.hint.place(x=10, y=7)
+        self.hint.bind("<Button-1>", lambda _e: self.songs_box.focus_set())
         btn_row = ctk.CTkFrame(self.txt_frame, fg_color="transparent")
-        btn_row.pack(fill="x", padx=12, pady=(4, 10))
-        ctk.CTkButton(btn_row, text="Load .txt file", width=140, command=self.load_txt).pack(
-            side="left"
-        )
-        ctk.CTkButton(
-            btn_row,
-            text="Open Chosic (export playlist)",
-            width=180,
-            command=self.open_chosic,
-        ).pack(side="left", padx=(10, 0))
-        if _HAS_DND:
-            ctk.CTkLabel(
-                btn_row,
-                text="Drop .txt anywhere on this window",
-                text_color="gray60",
-                font=ctk.CTkFont(size=11),
-            ).pack(side="right")
+        btn_row.pack(fill="x", padx=12, pady=(0, 6))
+        self.load_btn = ctk.CTkButton(btn_row, text="Load .txt", width=90, height=30, fg_color=C_BG,
+                                      hover_color="#2a2a30", text_color=C_TEXT, command=self.load_txt)
+        self.load_btn.pack(side="left")
+        self.clear_songs_btn = ctk.CTkButton(btn_row, text="Clear", width=70, height=30, fg_color=C_BG,
+                                             hover_color="#2a2a30", text_color=C_TEXT,
+                                             command=self.clear_songs)
+        self.clear_songs_btn.pack(side="left", padx=(8, 0))
+        self.chosic_btn = ctk.CTkButton(btn_row, text="Open Chosic (export playlist to .txt)", width=250, height=30, fg_color=C_BG,
+                                        hover_color="#2a2a30", text_color=C_TEXT, command=self.open_chosic)
+        self.chosic_btn.pack(side="left", padx=(8, 0))
+        self.count_label = ctk.CTkLabel(btn_row, text="0 songs", text_color=C_MUTED)
+        self.count_label.pack(side="right")
+        self.add_btn = ctk.CTkButton(self.txt_frame, text="Add to queue", height=34, fg_color="transparent",
+                                     border_width=1, border_color=C_ACCENT, text_color=C_ACCENT,
+                                     hover_color="#2a2a30", command=self.add_to_queue)
+        self.add_btn.pack(fill="x", padx=12, pady=(0, 12))
 
-        # --- Spotify mode ---
-        self.sp_frame = ctk.CTkFrame(self)
-
-        ctk.CTkLabel(
-            self.sp_frame,
-            text="Public & private playlists \u00b7 one-time login saved on this PC",
-            text_color="gray70",
-            font=ctk.CTkFont(size=11),
-        ).pack(anchor="w", padx=12, pady=(10, 2))
-
-        ctk.CTkLabel(
-            self.sp_frame,
-            text="Playlist URL  (paste or drop a Spotify link)",
-        ).pack(anchor="w", padx=12, pady=(6, 2))
-        self.sp_url = ctk.CTkEntry(
-            self.sp_frame, placeholder_text="https://open.spotify.com/playlist/..."
-        )
+        # -- Spotify card ---------------------------------------------------------------------
+        self.sp_frame = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=10)
+        ctk.CTkLabel(self.sp_frame, text="Public & private playlists \u00b7 one-time login saved on this PC",
+                     text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(self.sp_frame, text="Playlist URL  (paste or drop a Spotify link)").pack(
+            anchor="w", padx=12, pady=(6, 2))
+        self.sp_url = ctk.CTkEntry(self.sp_frame, placeholder_text="https://open.spotify.com/playlist/...")
         self.sp_url.pack(fill="x", padx=12, pady=2)
-
-        # Client ID row + info button
         key_row = ctk.CTkFrame(self.sp_frame, fg_color="transparent")
         key_row.pack(fill="x", padx=12, pady=(8, 2))
         ctk.CTkLabel(key_row, text="Client ID").pack(side="left")
-        ctk.CTkButton(
-            key_row,
-            text="What is this?",
-            width=100,
-            height=24,
-            fg_color="transparent",
-            border_width=1,
-            command=self.show_client_id_help,
-        ).pack(side="left", padx=(10, 0))
-        ctk.CTkButton(
-            key_row,
-            text="Open Spotify Dashboard",
-            width=160,
-            height=24,
-            command=self.open_spotify_dashboard,
-        ).pack(side="left", padx=(8, 0))
-
+        ctk.CTkButton(key_row, text="What is this?", width=100, height=24, fg_color="transparent",
+                      border_width=1, command=self.show_client_id_help).pack(side="left", padx=(10, 0))
+        ctk.CTkButton(key_row, text="Open Spotify Dashboard", width=160, height=24, fg_color=C_ACCENT,
+                      hover_color=C_ACCENT_H, text_color=C_ON_ACCENT,
+                      command=self.open_spotify_dashboard).pack(side="left", padx=(8, 0))
         self.client_id = ctk.CTkEntry(self.sp_frame, placeholder_text="Client ID")
         self.client_id.pack(fill="x", padx=12, pady=2)
-        self.client_secret = ctk.CTkEntry(
-            self.sp_frame, placeholder_text="Client Secret (optional, not needed)", show="\u2022"
-        )
+        self.client_secret = ctk.CTkEntry(self.sp_frame, placeholder_text="Client Secret (optional, not needed)",
+                                          show="\u2022")
         self.client_secret.pack(fill="x", padx=12, pady=2)
-
-        # Chosic helper
         chosic_row = ctk.CTkFrame(self.sp_frame, fg_color="transparent")
         chosic_row.pack(fill="x", padx=12, pady=(8, 10))
-        ctk.CTkLabel(
-            chosic_row,
-            text="No keys? Export a .txt with Chosic instead:",
-            text_color="gray70",
-            font=ctk.CTkFont(size=11),
-        ).pack(side="left")
-        ctk.CTkButton(
-            chosic_row,
-            text="Open Chosic",
-            width=110,
-            height=28,
-            command=self.open_chosic,
-        ).pack(side="right")
-
+        ctk.CTkLabel(chosic_row, text="No keys? Export a .txt with Chosic instead:", text_color=C_MUTED,
+                     font=ctk.CTkFont(size=11)).pack(side="left")
+        ctk.CTkButton(chosic_row, text="Open Chosic", width=110, height=28, fg_color=C_ACCENT,
+                      hover_color=C_ACCENT_H, text_color=C_ON_ACCENT, command=self.open_chosic).pack(side="right")
         if cfg.get("client_id"):
             self.client_id.insert(0, cfg["client_id"])
         if cfg.get("client_secret"):
             self.client_secret.insert(0, cfg["client_secret"])
 
-        # Output folder
-        self.folder_label = ctk.CTkLabel(self, text="Save folder")
-        self.folder_label.pack(anchor="w", padx=28, pady=(14, 2))
-        folder_row = ctk.CTkFrame(self, fg_color="transparent")
-        folder_row.pack(fill="x", padx=28)
-        self.folder_entry = ctk.CTkEntry(folder_row, placeholder_text="Choose where your MP3s will be saved")
-        self.folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ctk.CTkButton(folder_row, text="Browse", width=100, command=self.browse_folder).pack(
-            side="right"
-        )
+        # -- Queue card (only when it has lists) ----------------------------------------------
+        self.queue_card = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=10)
+        qh = ctk.CTkFrame(self.queue_card, fg_color="transparent")
+        qh.pack(fill="x", padx=12, pady=(10, 0))
+        self.queue_title = ctk.CTkLabel(qh, text="Queue", font=ctk.CTkFont(size=14, weight="bold"))
+        self.queue_title.pack(side="left")
+        self.clear_btn = ctk.CTkButton(qh, text="Clear queue", width=90, height=26, fg_color="transparent",
+                                       border_width=1, border_color=C_MUTED, text_color=C_TEXT,
+                                       hover_color="#2a2a30", command=self.clear_queue)
+        self.clear_btn.pack(side="right")
+        ctk.CTkLabel(self.queue_card, text="Each list goes into its own sub-folder, one after another.",
+                     text_color=C_MUTED, font=ctk.CTkFont(size=11), anchor="w").pack(
+            fill="x", padx=12, pady=(0, 4))
+        self.queue_rows = ctk.CTkFrame(self.queue_card, fg_color="transparent")
+        self.queue_rows.pack(fill="x", padx=12, pady=(0, 10))
 
+        # -- Save folder ----------------------------------------------------------------------
+        self.folder_label = ctk.CTkLabel(page, text="Save to folder", anchor="w",
+                                         font=ctk.CTkFont(size=13, weight="bold"))
+        self.folder_label.pack(fill="x", padx=24, pady=(14, 2))
+        folder_row = ctk.CTkFrame(page, fg_color="transparent")
+        folder_row.pack(fill="x", padx=22)
+        self.folder_entry = ctk.CTkEntry(folder_row, placeholder_text="Choose where your music will be saved")
+        self.folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.browse_btn = ctk.CTkButton(folder_row, text="Choose", width=90, fg_color=C_ACCENT,
+                                        hover_color=C_ACCENT_H, text_color=C_ON_ACCENT,
+                                        command=self.browse_folder)
+        self.browse_btn.pack(side="right")
+        ctk.CTkLabel(page, text="Tip: a list from the queue is saved in its own sub-folder here.",
+                     anchor="w", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(fill="x", padx=24)
         if cfg.get("last_folder") and os.path.isdir(cfg["last_folder"]):
             self.folder_entry.insert(0, cfg["last_folder"])
 
-        # Where to download from
-        src_row = ctk.CTkFrame(self, fg_color="transparent")
-        src_row.pack(fill="x", padx=28, pady=(12, 0))
-        ctk.CTkLabel(src_row, text="Download from").pack(side="left", padx=(0, 10))
-        self.SOURCES = ("Both", "Bandcamp only", "YouTube only")
-        self.source = ctk.StringVar(
-            value=cfg.get("source") if cfg.get("source") in self.SOURCES else "Both"
-        )
-        ctk.CTkSegmentedButton(
-            src_row, values=list(self.SOURCES), variable=self.source,
-            command=lambda _v: self._save_prefs(),
-        ).pack(side="left")
+        # -- Source (three radio choices with a one-line explanation) -------------------------
+        ctk.CTkLabel(page, text="Where to look", anchor="w", font=ctk.CTkFont(size=13, weight="bold")).pack(
+            fill="x", padx=24, pady=(14, 2))
+        saved_src = cfg.get("source") if cfg.get("source") in [c[0] for c in self.SOURCE_CHOICES] else "Both"
+        self.source = ctk.StringVar(value=saved_src)
+        self.source_radios = []
+        for value, label, expl in self.SOURCE_CHOICES:
+            rb = ctk.CTkRadioButton(page, text=label, variable=self.source, value=value,
+                                    command=self._save_prefs, fg_color=C_ACCENT, hover_color=C_ACCENT_H)
+            rb.pack(anchor="w", padx=28, pady=(4, 0))
+            ctk.CTkLabel(page, text=expl, text_color=C_MUTED, font=ctk.CTkFont(size=11), anchor="w").pack(
+                fill="x", padx=52)
+            self.source_radios.append(rb)
 
-        # Audio quality
-        q_row = ctk.CTkFrame(self, fg_color="transparent")
-        q_row.pack(fill="x", padx=28, pady=(10, 0))
-        ctk.CTkLabel(q_row, text="YouTube audio").pack(side="left", padx=(0, 10))
-        self.QUALITIES = ("Best available (M4A)", "Standard (MP3)")
+        # -- HQ options -----------------------------------------------------------------------
+        hq = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=10)
+        hq.pack(fill="x", padx=22, pady=(14, 0))
+        ctk.CTkLabel(hq, text="Audio quality", anchor="w", font=ctk.CTkFont(size=13, weight="bold")).pack(
+            fill="x", padx=14, pady=(10, 0))
         self.quality = ctk.StringVar(
-            value=cfg.get("quality") if cfg.get("quality") in self.QUALITIES else self.QUALITIES[0]
-        )
-        ctk.CTkSegmentedButton(
-            q_row, values=list(self.QUALITIES), variable=self.quality,
-            command=lambda _v: self._save_prefs(),
-        ).pack(side="left")
-
-        # Free lossless sources
-        f_row = ctk.CTkFrame(self, fg_color="transparent")
-        f_row.pack(fill="x", padx=28, pady=(10, 0))
+            value=cfg.get("quality") if cfg.get("quality") in self.QUALITIES else self.QUALITIES[0])
+        self.quality_radios = []
+        for q, expl in (("Best available (M4A)", "Keeps YouTube's original audio (no re-encoding) as M4A"),
+                        ("Standard (MP3)", "Converts everything to MP3 (plays on any device)")):
+            rb = ctk.CTkRadioButton(hq, text=q, variable=self.quality, value=q, command=self._save_prefs,
+                                    fg_color=C_ACCENT, hover_color=C_ACCENT_H)
+            rb.pack(anchor="w", padx=18, pady=(6, 0))
+            ctk.CTkLabel(hq, text=expl, text_color=C_MUTED, font=ctk.CTkFont(size=11), anchor="w").pack(
+                fill="x", padx=42)
+            self.quality_radios.append(rb)
         self.free_hq = ctk.BooleanVar(value=bool(cfg.get("free_hq", True)))
-        ctk.CTkCheckBox(
-            f_row, text="Check Jamendo + Internet Archive first (free, Creative Commons, lossless when available)",
-            variable=self.free_hq, command=self._save_prefs,
-        ).pack(side="left")
-        j_row = ctk.CTkFrame(self, fg_color="transparent")
-        j_row.pack(fill="x", padx=28, pady=(6, 0))
-        ctk.CTkLabel(j_row, text="Your own Jamendo Client ID (optional)").pack(side="left", padx=(0, 10))
-        self.jamendo_id = ctk.CTkEntry(j_row, placeholder_text="from devportal.jamendo.com", width=240)
+        self.free_chk = ctk.CTkCheckBox(hq, text="Check Jamendo + Internet Archive first",
+                                        variable=self.free_hq, command=self._save_prefs,
+                                        fg_color=C_ACCENT, hover_color=C_ACCENT_H, checkmark_color=C_ON_ACCENT)
+        self.free_chk.pack(anchor="w", padx=18, pady=(10, 0))
+        ctk.CTkLabel(hq, text="Free, Creative Commons music, lossless (FLAC) when available",
+                     text_color=C_MUTED, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=44)
+        j_row = ctk.CTkFrame(hq, fg_color="transparent")
+        j_row.pack(fill="x", padx=18, pady=(6, 12))
+        ctk.CTkLabel(j_row, text="Your own Jamendo Client ID (optional)", text_color=C_MUTED,
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 8))
+        self.jamendo_id = ctk.CTkEntry(j_row, placeholder_text="from devportal.jamendo.com", width=220, height=26)
         self.jamendo_id.pack(side="left")
         if cfg.get("jamendo_id"):
             self.jamendo_id.insert(0, cfg["jamendo_id"])
         self.jamendo_id.bind("<FocusOut>", lambda _e: self._save_prefs())
 
-        # Start
-        action_row = ctk.CTkFrame(self, fg_color="transparent")
-        action_row.pack(fill="x", padx=28, pady=(16, 8))
-        self.start_btn = ctk.CTkButton(
-            action_row,
-            text="Start Download",
-            height=42,
-            font=ctk.CTkFont(size=15, weight="bold"),
-            command=self.start,
-        )
+        # -- Start / Pause --------------------------------------------------------------------
+        action_row = ctk.CTkFrame(page, fg_color="transparent")
+        action_row.pack(fill="x", padx=22, pady=(16, 6))
+        self.start_btn = ctk.CTkButton(action_row, text="Start Download", height=46, fg_color=C_ACCENT,
+                                       hover_color=C_ACCENT_H, text_color=C_ON_ACCENT,
+                                       font=ctk.CTkFont(size=16, weight="bold"), command=self.start)
         self.start_btn.pack(side="left", fill="x", expand=True)
-        self.stop_btn = ctk.CTkButton(
-            action_row,
-            text="Stop",
-            width=80,
-            height=42,
-            fg_color="#8b2e2e",
-            hover_color="#a33a3a",
-            state="disabled",
-            command=self.stop,
-        )
-        self.stop_btn.pack(side="right", padx=(8, 0))
-        self.pause_btn = ctk.CTkButton(
-            action_row,
-            text="Pause",
-            width=80,
-            height=42,
-            state="disabled",
-            command=self.toggle_pause,
-        )
+        self.pause_btn = ctk.CTkButton(action_row, text="Pause", width=96, height=46, fg_color=C_SURFACE,
+                                       hover_color="#2a2a30", text_color=C_TEXT, state="disabled",
+                                       command=self.toggle_pause)
         self.pause_btn.pack(side="right", padx=(8, 0))
+        util_row = ctk.CTkFrame(page, fg_color="transparent")
+        util_row.pack(fill="x", padx=22, pady=(0, 6))
+        ctk.CTkButton(util_row, text="Open folder", width=110, height=28, fg_color="transparent",
+                      border_width=1, border_color=C_MUTED, text_color=C_TEXT, hover_color=C_SURFACE,
+                      command=self.open_folder).pack(side="left")
+        self.retry_btn = ctk.CTkButton(util_row, text="Retry failed", width=140, height=28, fg_color=C_ACCENT,
+                                       hover_color=C_ACCENT_H, text_color=C_ON_ACCENT, command=self.retry_failed)
+        # (the Retry button only appears after a run with failures)
 
-        # Progress
-        prog_row = ctk.CTkFrame(self, fg_color="transparent")
-        prog_row.pack(fill="x", padx=28, pady=(0, 6))
-        self.progress = ctk.CTkProgressBar(prog_row, height=10)
-        self.progress.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        # CustomTkinter always draws a small rounded "dot" of fill at 0%; hide it by
-        # painting the fill the same colour as the track until there is real progress.
-        self._bar_fill = self.progress.cget("progress_color")
-        self._bar_track = self.progress.cget("fg_color")
-        self.progress.configure(progress_color=self._bar_track)
+        # -- Progress area (only while running) ------------------------------------------------
+        self.prog_frame = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=10)
+        self.list_heading = ctk.CTkLabel(self.prog_frame, text="", anchor="w", text_color=C_ACCENT)
+        p1 = ctk.CTkFrame(self.prog_frame, fg_color="transparent")
+        p1.pack(fill="x", padx=12, pady=(10, 0))
+        self.prog_song = ctk.CTkLabel(p1, text="", anchor="w", justify="left")
+        self.prog_song.pack(side="left", fill="x", expand=True)
+        self.prog_pct = ctk.CTkLabel(p1, text="0%", text_color=C_ACCENT, font=ctk.CTkFont(weight="bold"))
+        self.prog_pct.pack(side="right")
+        self.prog_step = ctk.CTkLabel(self.prog_frame, text="", anchor="w", text_color=C_MUTED,
+                                      font=ctk.CTkFont(size=12))
+        self.prog_step.pack(fill="x", padx=12)
+        self.progress = ctk.CTkProgressBar(self.prog_frame, height=10, progress_color=C_ACCENT,
+                                           fg_color="#33333a")
+        self.progress.pack(fill="x", padx=12, pady=(6, 12))
         self.progress.set(0)
-        self.progress_label = ctk.CTkLabel(
-            prog_row, text="Ready", width=90, anchor="e", text_color="gray70"
-        )
-        self.progress_label.pack(side="right")
 
-        # Open folder / retry
-        util_row = ctk.CTkFrame(self, fg_color="transparent")
-        util_row.pack(fill="x", padx=28, pady=(0, 8))
-        ctk.CTkButton(
-            util_row, text="Open folder", width=110, height=28,
-            fg_color="transparent", border_width=1, command=self.open_folder,
-        ).pack(side="left")
-        self.retry_btn = ctk.CTkButton(
-            util_row, text="Retry failed", width=140, height=28,
-            state="disabled", command=self.retry_failed,
-        )
-        self.retry_btn.pack(side="left", padx=(8, 0))
-        self.clear_btn = ctk.CTkButton(
-            util_row, text="Clear queue", width=100, height=28,
-            fg_color="transparent", border_width=1, state="disabled", command=self.clear_queue,
-        )
-        self.clear_btn.pack(side="right")
-        self.add_btn = ctk.CTkButton(
-            util_row, text="Add to queue", width=110, height=28, command=self.add_to_queue,
-        )
-        self.add_btn.pack(side="right", padx=(0, 8))
-        self.queue_label = ctk.CTkLabel(
-            self, text="", anchor="w", justify="left", text_color="gray70", wraplength=600,
-        )  # shown only while the queue has items
-
-        # Logs: one per mode so .txt runs and Spotify runs don't get mixed together
-        self.log_holder = ctk.CTkFrame(self, fg_color="transparent")
-        self.log_holder.pack(fill="both", expand=True, padx=28, pady=(0, 16))
-        self.log_boxes = {
-            "txt": ctk.CTkTextbox(self.log_holder, height=150, state="disabled"),
-            "spotify": ctk.CTkTextbox(self.log_holder, height=150, state="disabled"),
-        }
+        # -- Log (collapsible) ----------------------------------------------------------------
+        self.log_card = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=10)
+        self.log_card.pack(fill="x", padx=22, pady=(10, 18))
+        self.log_open = bool(cfg.get("log_open", True))
+        self.log_head = ctk.CTkButton(self.log_card, text="", anchor="w", height=34, fg_color="transparent",
+                                      hover_color="#2a2a30", text_color=C_TEXT, command=self._toggle_log)
+        self.log_head.pack(fill="x", padx=4, pady=2)
+        self.log_body = ctk.CTkFrame(self.log_card, fg_color="transparent")
+        self.songs_view = ctk.CTkTextbox(self.log_body, height=320, state="disabled", fg_color=C_BG,
+                                         wrap="word")
+        self.details_box = ctk.CTkTextbox(self.log_body, height=320, state="disabled", fg_color=C_BG,
+                                          font=ctk.CTkFont(family="Consolas", size=11), wrap="word")
+        tb = self.songs_view._textbox
+        tb.tag_config("head", foreground=C_ACCENT, font=("Segoe UI", 10, "bold"))
+        tb.tag_config("ok", foreground=C_ACCENT)
+        tb.tag_config("skip", foreground=C_MUTED)
+        tb.tag_config("fail", foreground=C_ERR)
+        tb.tag_config("now", foreground=C_ACCENT)
+        tb.tag_config("note", foreground=C_MUTED, lmargin1=18, lmargin2=18)
+        tb.tag_config("noterr", foreground=C_ERR, lmargin1=18, lmargin2=18)
+        tb.tag_config("sum", foreground=C_TEXT, font=("Segoe UI", 10, "bold"))
+        self.show_details = False
+        self.songs_view.pack(fill="x", padx=8, pady=(0, 4))
+        btns = ctk.CTkFrame(self.log_body, fg_color="transparent")
+        btns.pack(fill="x", padx=8, pady=(0, 10))
+        self.details_btn = ctk.CTkButton(btns, text="Details", width=90, height=28, fg_color=C_BG,
+                                         hover_color="#2a2a30", text_color=C_TEXT, command=self._toggle_details)
+        self.details_btn.pack(side="left")
+        ctk.CTkButton(btns, text="Copy log", width=90, height=28, fg_color=C_BG, hover_color="#2a2a30",
+                      text_color=C_TEXT, command=self.copy_log).pack(side="left", padx=(8, 0))
+        self._log_header = "Log"
+        self._apply_log_open()
 
         self._switch_mode()
+        self._refresh_queue_ui()
         self._setup_drag_drop()
+        self._poll_box()
+        self._init_status()
+
+    # ---------------------------------------------------------------------------------------
+    # small UI helpers
+    def _poll_box(self):
+        """Keep the song count and the hint text in step with what's in the box."""
+        try:
+            text = self.songs_box.get("1.0", "end")
+            n = len(parse_song_lines(text))
+            self.count_label.configure(text=f"{n} song" + ("" if n == 1 else "s"))
+            if text.strip():
+                self.hint.place_forget()
+            else:
+                self.hint.place(x=10, y=7)
+        except Exception:
+            pass
+        self.after(400, self._poll_box)
+
+    def clear_songs(self):
+        self.songs_box.delete("1.0", "end")
+        self._loaded_name = ""
 
     def _switch_mode(self):
         # Always insert the input panel just above "Save folder" so the layout never shuffles.
@@ -2071,10 +2598,8 @@ class SevbyApp(_SevbyBase):
         self.txt_frame.pack_forget()
         mode = self.mode.get()
         frame = self.txt_frame if mode == "txt" else self.sp_frame
-        frame.pack(fill="x", padx=28, pady=(12, 0), before=self.folder_label)
-        for box in self.log_boxes.values():
-            box.pack_forget()
-        self.log_boxes[mode].pack(fill="both", expand=True)
+        frame.pack(fill="x", padx=22, pady=(12, 0), before=self.queue_card if self.queue_card.winfo_ismapped()
+                   else self.folder_label)
         self._save_prefs()
 
     def _save_prefs(self):
@@ -2085,9 +2610,19 @@ class SevbyApp(_SevbyBase):
             cfg["quality"] = self.quality.get()
             cfg["free_hq"] = bool(self.free_hq.get())
             cfg["jamendo_id"] = self.jamendo_id.get().strip()
+            cfg["log_open"] = bool(self.log_open)
             folder = self.folder_entry.get().strip()
             if folder and os.path.isdir(folder):
                 cfg["last_folder"] = folder
+            save_config(cfg)
+        except Exception:
+            pass
+
+    def _save_queue(self):
+        try:
+            cfg = load_config()
+            cfg["queue"] = [{k: v for k, v in j.items() if not k.startswith("_") and k != "quiet"}
+                            for j in self.queue]
             save_config(cfg)
         except Exception:
             pass
@@ -2096,32 +2631,359 @@ class SevbyApp(_SevbyBase):
         self._save_prefs()
         self.destroy()
 
+    def _set_inputs(self, enabled: bool):
+        st = "normal" if enabled else "disabled"
+        for w in (self.songs_box, self.folder_entry):
+            w.configure(state=st)
+        for w in (self.load_btn, self.clear_songs_btn, self.add_btn, self.browse_btn, self.chosic_btn,
+                  self.free_chk, *self.source_radios, *self.quality_radios, *self.mode_radios):
+            w.configure(state=st)
+        self.jamendo_id.configure(state=st)
+
+    # ---------------------------------------------------------------------------------------
+    # status line, update banner, About
+    def _init_status(self):
+        self._set_status("Ready")
+        threading.Thread(target=self._check_ytdlp_daily, daemon=True).start()
+
+    def _set_status(self, text: str):
+        self.status_label.configure(text=f"{text} \u00b7 yt-dlp {ytdlp_version()}")
+
+    def _check_ytdlp_daily(self):
+        try:
+            cfg = load_config()
+            now = time.time()
+            latest = cfg.get("yt_latest")
+            if not latest or now - float(cfg.get("yt_check_time") or 0) > 86400:
+                latest = ytdlp_latest_tag()
+                if latest:
+                    cfg = load_config()
+                    cfg["yt_latest"], cfg["yt_check_time"] = latest, now
+                    save_config(cfg)
+            self._ytdlp_latest = latest
+            if latest and ver_tuple(latest) > ver_tuple(ytdlp_version()):
+                self.after(0, lambda: self._show_banner(latest))
+        except Exception:
+            pass
+
+    def _show_banner(self, latest: str):
+        self.banner_label.configure(text=f"A newer yt-dlp ({latest}) is available")
+        if not self.banner.winfo_ismapped():
+            self.banner.pack(fill="x", padx=22, pady=(0, 6), after=self.status_label)
+
+    def show_about(self):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("About & updates")
+        self._apply_icon(dlg)
+        dlg.configure(fg_color=C_BG)
+        dlg.transient(self)
+        w, h = 520, 720
+        self.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
+        y = self.winfo_rooty() + 20
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+        body = ctk.CTkScrollableFrame(dlg, fg_color=C_BG)
+        body.pack(fill="both", expand=True)
+
+        card = ctk.CTkFrame(body, fg_color=C_SURFACE, corner_radius=10)
+        card.pack(fill="x", padx=14, pady=(12, 8))
+        ctk.CTkLabel(card, text="Downloader (yt-dlp)", font=ctk.CTkFont(size=15, weight="bold"),
+                     anchor="w").pack(fill="x", padx=14, pady=(12, 0))
+        ver = ctk.CTkLabel(card, text=f"Version {ytdlp_version()}", anchor="w")
+        ver.pack(fill="x", padx=14)
+        status = ctk.CTkLabel(card, text="", anchor="w", text_color=C_MUTED)
+        status.pack(fill="x", padx=14)
+        btn = ctk.CTkButton(card, text="Check for updates", height=40, fg_color=C_ACCENT,
+                            hover_color=C_ACCENT_H, text_color=C_ON_ACCENT)
+        btn.pack(fill="x", padx=14, pady=(8, 6))
+        ctk.CTkLabel(card, justify="left", anchor="w", wraplength=440, text_color=C_MUTED,
+                     font=ctk.CTkFont(size=11),
+                     text="YouTube changes often. If downloads suddenly start failing, update here first. "
+                          "SEVBY HQ also checks once a day and shows a message on the main screen when an "
+                          "update is out.").pack(fill="x", padx=14, pady=(0, 12))
+
+        state = {"latest": self._ytdlp_latest}
+
+        def refresh_status():
+            cur = ytdlp_version()
+            latest = state["latest"]
+            if latest and ver_tuple(latest) > ver_tuple(cur):
+                status.configure(text=f"Update available: {latest}", text_color=C_ACCENT)
+                btn.configure(text=f"Update to {latest}", command=do_update)
+            else:
+                status.configure(text="Up to date \u2713" if latest else "", text_color=C_MUTED)
+                btn.configure(text="Check for updates", command=do_check)
+
+        def do_check():
+            btn.configure(state="disabled", text="Checking\u2026")
+
+            def work():
+                latest = ytdlp_latest_tag()
+                def done():
+                    btn.configure(state="normal")
+                    if latest:
+                        state["latest"] = self._ytdlp_latest = latest
+                        cfg = load_config()
+                        cfg["yt_latest"], cfg["yt_check_time"] = latest, time.time()
+                        save_config(cfg)
+                    else:
+                        status.configure(text="Couldn't reach GitHub. Check your internet connection.",
+                                         text_color=C_ERR)
+                    refresh_status() if latest else btn.configure(text="Check for updates")
+                self.after(0, done)
+            threading.Thread(target=work, daemon=True).start()
+
+        def do_update():
+            latest = state["latest"]
+            btn.configure(state="disabled", text="Updating\u2026")
+            status.configure(text="Downloading the newest yt-dlp\u2026", text_color=C_MUTED)
+
+            def work():
+                ok, msg = download_ytdlp_update(latest)
+                def done():
+                    if ok:
+                        status.configure(text=f"Updated to {latest}. Restart SEVBY HQ to use it.",
+                                         text_color=C_ACCENT)
+                        btn.configure(state="normal", text="Restart now", command=self.restart_app)
+                        self.banner.pack_forget()
+                    else:
+                        status.configure(text=msg, text_color=C_ERR)
+                        btn.configure(state="normal", text=f"Update to {latest}")
+                self.after(0, done)
+            threading.Thread(target=work, daemon=True).start()
+
+        refresh_status()
+
+        about = ctk.CTkFrame(body, fg_color=C_SURFACE, corner_radius=10)
+        about.pack(fill="x", padx=14, pady=8)
+        ctk.CTkLabel(about, text=f"About {APP_NAME} v{VERSION}", font=ctk.CTkFont(size=15, weight="bold"),
+                     anchor="w").pack(fill="x", padx=14, pady=(12, 4))
+        ctk.CTkLabel(
+            about, justify="left", anchor="w", wraplength=440, font=ctk.CTkFont(size=12),
+            text=("Turns a list of songs into tagged audio files on your own computer. It checks free "
+                  "Creative Commons sources for lossless files first, then Bandcamp, then YouTube.\n\n"
+                  "Built on yt-dlp, FFmpeg and customtkinter, which do the heavy lifting. Not affiliated "
+                  "with Bandcamp, YouTube, Spotify, Jamendo, the Internet Archive or Apple.\n\n"
+                  "Please support artists: if you like a song, buy it on Bandcamp.\n"
+                  "Only download music you have the right to download."),
+        ).pack(fill="x", padx=14)
+        row = ctk.CTkFrame(about, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(8, 12))
+        ctk.CTkButton(row, text="Project page", width=110, fg_color=C_BG, hover_color="#2a2a30",
+                      text_color=C_TEXT,
+                      command=lambda: webbrowser.open("https://github.com/Obamna1234/sevby-hq")).pack(side="left")
+        ctk.CTkButton(row, text="Copy diagnostics", width=130, fg_color=C_BG, hover_color="#2a2a30",
+                      text_color=C_TEXT, command=lambda: self._copy_text(diagnostics_text())).pack(
+            side="left", padx=(8, 0))
+
+        adv_open = {"v": False}
+        adv = ctk.CTkFrame(body, fg_color=C_SURFACE, corner_radius=10)
+        adv.pack(fill="x", padx=14, pady=(8, 14))
+        adv_body = ctk.CTkFrame(adv, fg_color="transparent")
+        adv_btn = ctk.CTkButton(adv, text="\u25b8 Advanced", anchor="w", fg_color="transparent",
+                                hover_color="#2a2a30", text_color=C_TEXT, height=34)
+        adv_btn.pack(fill="x", padx=4, pady=2)
+
+        def toggle_adv():
+            adv_open["v"] = not adv_open["v"]
+            if adv_open["v"]:
+                adv_btn.configure(text="\u25be Advanced")
+                adv_body.pack(fill="x", padx=12, pady=(0, 10))
+            else:
+                adv_btn.configure(text="\u25b8 Advanced")
+                adv_body.pack_forget()
+        adv_btn.configure(command=toggle_adv)
+
+        engine = ctk.CTkTextbox(adv_body, height=130, fg_color=C_BG, font=ctk.CTkFont(family="Consolas", size=11))
+        engine.pack(fill="x")
+        engine.insert("1.0", diagnostics_text())
+        engine.configure(state="disabled")
+        net_out = ctk.CTkLabel(adv_body, text="", anchor="w", justify="left", text_color=C_MUTED,
+                               font=ctk.CTkFont(size=11), wraplength=440)
+        net_btn = ctk.CTkButton(adv_body, text="Network test", width=120, fg_color=C_BG, hover_color="#2a2a30",
+                                text_color=C_TEXT)
+        net_btn.pack(anchor="w", pady=(8, 0))
+        net_out.pack(fill="x")
+
+        def run_net():
+            net_btn.configure(state="disabled")
+            net_out.configure(text="Testing\u2026")
+
+            def work():
+                text = network_test_text()
+                self.after(0, lambda: (net_out.configure(text=text), net_btn.configure(state="normal")))
+            threading.Thread(target=work, daemon=True).start()
+        net_btn.configure(command=run_net)
+        blocked = ctk.BooleanVar(value=DEBUG["bc_blocked"])
+        ctk.CTkSwitch(adv_body, text="Pretend Bandcamp is blocked (to test the YouTube fallback)",
+                      variable=blocked, progress_color=C_ACCENT,
+                      command=lambda: DEBUG.__setitem__("bc_blocked", bool(blocked.get()))).pack(
+            anchor="w", pady=(10, 0))
+
+    def _copy_text(self, text: str):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+        except Exception:
+            pass
+
+    def restart_app(self):
+        try:
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([sys.executable])
+            else:
+                subprocess.Popen([sys.executable] + sys.argv)
+        except Exception:
+            return
+        self._on_close()
+
+    # ---------------------------------------------------------------------------------------
+    # log: header bar, song list, details
+    def _apply_log_open(self):
+        self.log_head.configure(text=("\u25be " if self.log_open else "\u25b8 ") + self._log_header)
+        if self.log_open:
+            self.log_body.pack(fill="x", padx=4, pady=(0, 2))
+            self._show_view()
+        else:
+            self.log_body.pack_forget()
+
+    def _toggle_log(self):
+        self.log_open = not self.log_open
+        self._apply_log_open()
+        self._save_prefs()
+
+    def _set_log_header(self, text: str):
+        def _():
+            self._log_header = text
+            self.log_head.configure(text=("\u25be " if self.log_open else "\u25b8 ") + text)
+        self.after(0, _)
+
+    def _show_view(self):
+        self.songs_view.pack_forget()
+        self.details_box.pack_forget()
+        (self.details_box if self.show_details else self.songs_view).pack(fill="x", padx=8, pady=(0, 4),
+                                                                         before=self.log_body.winfo_children()[-1])
+        self.details_btn.configure(text="Song list" if self.show_details else "Details")
+
+    def _toggle_details(self):
+        self.show_details = not self.show_details
+        self._show_view()
+
+    def copy_log(self):
+        try:
+            songs = self.songs_view.get("1.0", "end").strip()
+            details = self.details_box.get("1.0", "end").strip()
+            self._copy_text(f"{self._log_header}\n\n{songs}\n\n--- Details ---\n{details}\n")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _at_bottom(box) -> bool:
+        try:
+            return box.yview()[1] >= 0.995
+        except Exception:
+            return True
+
     def log(self, msg: str):
+        """Technical log: file + the 'Details' view."""
         try:
             with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
         except OSError:
             pass
 
-        box = self.log_boxes.get(self.run_mode or self.mode.get(), self.log_boxes["txt"])
-
         def _():
+            box = self.details_box
+            was = self._at_bottom(box)
             box.configure(state="normal")
             box.insert("end", msg + "\n")
             try:
-                # keep the on-screen log light for huge playlists (full log stays in the file)
                 if int(box.index("end-1c").split(".")[0]) > 3000:
                     box.delete("1.0", "1000.0")
             except Exception:
                 pass
-            box.see("end")
+            if was:
+                box.see("end")
             box.configure(state="disabled")
         self.after(0, _)
 
-    def _info_box(self, title: str, msg: str):
-        # tkinter dialogs must be opened from the main thread
-        self.after(0, lambda: messagebox.showinfo(title, msg))
+    def _sv(self, fn):
+        """Edit the song list (state juggling + auto-scroll only if the reader was at the bottom)."""
+        box = self.songs_view
+        was = self._at_bottom(box)
+        box.configure(state="normal")
+        try:
+            fn(box._textbox)
+        finally:
+            if was:
+                box.see("end")
+            box.configure(state="disabled")
 
+    def sv_clear(self):
+        self._cur_start = None
+        self._sv(lambda t: t.delete("1.0", "end"))
+
+    def sv_heading(self, text: str):
+        self.after(0, lambda: self._sv(lambda t: t.insert("end", text + "\n", "head")))
+
+    def sv_summary(self, text: str):
+        self.after(0, lambda: self._sv(lambda t: t.insert("end", text + "\n", "sum")))
+
+    def sv_now(self, i: int, n: int, song: str):
+        def _():
+            self._cur_song = song
+            self._cur_step = "Starting\u2026"
+            self._render_now()
+            self.prog_song.configure(text=f"{i} / {n} \u00b7 {song}")
+            self.prog_pct.configure(text=f"{int(100 * (i - 1) / max(1, n))}%")
+            self.progress.set((i - 1) / max(1, n))
+            self.prog_step.configure(text="Starting\u2026")
+            self._set_log_header(f"Log \u00b7 {i} / {n}" + (f" (list {self._list_i}/{self._list_n})" if self._list_n > 1 else ""))
+        self.after(0, _)
+
+    def _render_now(self):
+        def f(t):
+            if self._cur_start:
+                t.delete(self._cur_start, "end-1c")
+            self._cur_start = t.index("end-1c")
+            t.insert("end", "NOW  ", "now")
+            t.insert("end", self._cur_song + "\n")
+            t.insert("end", "    " + self._cur_step + "\n", "note")
+        self._sv(f)
+
+    def sv_step(self, text: str):
+        def _():
+            self._cur_step = text
+            self.prog_step.configure(text=text)
+            if self._cur_start:
+                self._render_now()
+        self.after(0, _)
+
+    def sv_result(self, i: int, n: int, song: str, res: dict):
+        status = res.get("status")
+        mark, tag, ntag = {"ok": ("\u2713", "ok", "note"), "skip": ("\u21b7", "skip", "note"),
+                           "dup": ("\u21b7", "skip", "note"), "fail": ("\u2717", "fail", "noterr")}[status]
+
+        def f(t):
+            if self._cur_start:
+                t.delete(self._cur_start, "end-1c")
+            t.insert("end", mark + " ", tag)
+            t.insert("end", song + "\n", "skip" if status in ("skip", "dup") else None)
+            t.insert("end", "    " + (res.get("note") or "") + "\n", ntag)
+            try:
+                if int(t.index("end-1c").split(".")[0]) > 6000:
+                    t.delete("1.0", "2000.0")
+            except Exception:
+                pass
+            self._cur_start = None
+
+        def _():
+            self._sv(f)
+            self.progress.set(i / max(1, n))
+            self.prog_pct.configure(text=f"{int(100 * i / max(1, n))}%")
+        self.after(0, _)
+
+    # ---------------------------------------------------------------------------------------
     def browse_folder(self):
         path = filedialog.askdirectory()
         if path:
@@ -2162,6 +3024,45 @@ class SevbyApp(_SevbyBase):
         _set()
         # CustomTkinter installs its own blue icon ~200 ms after the window opens; override it.
         win.after(300, _set)
+        # Then hand Windows the exact icon sizes it wants (taskbar / title bar), so nothing is scaled and blurry.
+        for ms in (450, 1200):
+            win.after(ms, lambda: self._win_exact_icons(win))
+
+    def _win_exact_icons(self, win):
+        try:
+            import ctypes
+
+            u = ctypes.windll.user32
+            u.LoadImageW.restype = ctypes.c_void_p
+            u.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int,
+                                     ctypes.c_int, ctypes.c_uint]
+            u.SendMessageW.restype = ctypes.c_void_p
+            u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+            hwnd = int(win.wm_frame(), 16) or win.winfo_id()
+            try:
+                u.GetDpiForWindow.restype = ctypes.c_uint
+                u.GetDpiForWindow.argtypes = [ctypes.c_void_p]
+                dpi = int(u.GetDpiForWindow(hwnd)) or 96
+            except Exception:
+                dpi = 96
+            scale = dpi / 96.0
+            frames = (16, 20, 24, 32, 40, 48, 64)  # sizes stored in sevbyicon.ico
+
+            def nearest(v):
+                return min(frames, key=lambda f: abs(f - v))
+
+            small = nearest(16 * scale)
+            big = nearest(24 * scale)  # the taskbar button icon
+            keep = getattr(self, "_hicons", None)
+            if keep is None:
+                keep = self._hicons = []
+            for kind, size in ((0, small), (1, big)):  # ICON_SMALL, ICON_BIG
+                h = u.LoadImageW(None, ICON_PATH, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+                if h:
+                    keep.append(h)
+                    u.SendMessageW(hwnd, 0x80, kind, h)  # WM_SETICON
+        except Exception:
+            pass
 
     def _center_window(self, width: int, height: int):
         """Place the main window in the centre of the screen."""
@@ -2315,160 +3216,6 @@ class SevbyApp(_SevbyBase):
         except Exception:
             pass
 
-    def set_progress(self, fraction: float, label: str = ""):
-        fraction = max(0.0, min(1.0, fraction))
-
-        def _():
-            self.progress.configure(
-                progress_color=self._bar_fill if fraction > 0.005 else self._bar_track
-            )
-            self.progress.set(fraction)
-            if label:
-                self.progress_label.configure(text=label)
-
-        self.after(0, _)
-
-    def start(self):
-        if self.queue:  # a queue is waiting: run it (each item has its own settings)
-            self._save_prefs()
-            self._begin(list(self.queue))
-            return
-        out_dir = self.folder_entry.get().strip()
-        if not out_dir or not os.path.isdir(out_dir):
-            messagebox.showerror("Error", "Please choose a valid save folder.")
-            return
-
-        if self.mode.get() == "spotify" and not self.client_id.get().strip():
-            try:
-                clip = self.clipboard_get().strip()
-            except Exception:
-                clip = ""
-            if re.fullmatch(r"[0-9a-fA-F]{32}", clip):
-                self.client_id.insert(0, clip)
-                self.log("Pasted your Client ID from the clipboard.")
-            else:
-                self._need_client_id()
-                return
-
-        mode = self.mode.get()
-        job = {
-            "mode": mode,
-            "out_dir": out_dir,
-            "source": self.source.get(),
-            "quality": self.quality.get(),
-            "free_hq": bool(self.free_hq.get()), "jamendo_id": self.jamendo_id.get().strip(),
-            "raw": self.songs_box.get("1.0", "end") if mode == "txt" else "",
-            "url": self.sp_url.get().strip(),
-            "cid": self.client_id.get().strip(),
-            "secret": self.client_secret.get().strip(),
-            "songs": None,  # set when retrying failed songs
-        }
-        self._save_prefs()
-        self._begin([job])
-
-    def _begin(self, jobs: list):
-        try:
-            LOG_PATH.write_text("", encoding="utf-8")
-        except OSError:
-            pass
-        self._job = jobs[0] if len(jobs) == 1 else None
-        self.run_mode = jobs[0]["mode"]
-        self._set_failed([])
-        STOP_EVENT.clear()
-        PAUSE_EVENT.clear()
-        self.start_btn.configure(state="disabled", text="Working...")
-        self.pause_btn.configure(state="normal", text="Pause")
-        self.stop_btn.configure(state="normal")
-        self.add_btn.configure(state="disabled")
-        self.clear_btn.configure(state="disabled")
-        self.set_progress(0, "Starting\u2026")
-        threading.Thread(target=self._worker, args=(jobs,), daemon=True).start()
-
-    # \u2500\u2500 Queue \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    def add_to_queue(self):
-        """Snapshot what is on screen as one queue item, then clear the inputs for the next one."""
-        out_dir = self.folder_entry.get().strip()
-        if not out_dir or not os.path.isdir(out_dir):
-            messagebox.showerror("Error", "Choose a save folder first \u2014 each queue item is saved "
-                                          "in its own folder inside it.")
-            return
-        mode = self.mode.get()
-        job = {
-            "mode": mode, "out_dir": out_dir, "source": self.source.get(),
-            "quality": self.quality.get(),
-            "free_hq": bool(self.free_hq.get()), "jamendo_id": self.jamendo_id.get().strip(),
-            "raw": "", "url": "", "cid": "", "secret": "", "songs": None,
-        }
-        if mode == "txt":
-            raw = self.songs_box.get("1.0", "end")
-            songs = parse_song_lines(raw)
-            if not songs:
-                messagebox.showinfo("SEVBY", "Paste or load some songs first.")
-                return
-            name = sanitize_filename(self._loaded_name).strip(". ") or f"Song list {len(self.queue) + 1}"
-            job.update(raw=raw, name=f"{name} ({len(songs)} songs)", subfolder=name)
-            self.songs_box.delete("1.0", "end")
-            self._loaded_name = ""
-        else:
-            url = self.sp_url.get().strip()
-            cid = self.client_id.get().strip()
-            m = re.search(r"playlist[/:]([a-zA-Z0-9]+)", url)
-            if not m:
-                messagebox.showinfo("SEVBY", "Paste a Spotify playlist link first.")
-                return
-            if not cid:
-                messagebox.showinfo("SEVBY", "Enter your Spotify Client ID first.")
-                return
-            job.update(
-                url=url, cid=cid, secret=self.client_secret.get().strip(),
-                name=f"Spotify playlist \u2026{m.group(1)[:6]}", subfolder=True,
-            )
-            self.sp_url.delete(0, "end")
-        self.queue.append(job)
-        self._refresh_queue_ui()
-        self._save_prefs()
-
-    def clear_queue(self):
-        self.queue.clear()
-        self._refresh_queue_ui()
-
-    def _queue_remove(self, job: dict):
-        self.queue = [j for j in self.queue if j is not job]
-        self._refresh_queue_ui()
-
-    def _refresh_queue_ui(self):
-        n = len(self.queue)
-        running = self.run_mode is not None
-        if n:
-            lines = [f"{i}. {j['name']}  \u2192  {j['out_dir']}" for i, j in enumerate(self.queue[:6], 1)]
-            if n > 6:
-                lines.append(f"\u2026and {n - 6} more")
-            self.queue_label.configure(text="Queue (runs one after another):\n" + "\n".join(lines))
-            if not self.queue_label.winfo_ismapped():
-                self.queue_label.pack(fill="x", padx=28, pady=(0, 6), before=self.log_holder)
-        else:
-            self.queue_label.pack_forget()
-        if not running:
-            self.start_btn.configure(text=f"Start queue ({n})" if n else "Start Download")
-            self.clear_btn.configure(state="normal" if n else "disabled")
-
-    def _set_failed(self, songs: list[str]):
-        self.failed = list(songs)
-        if songs:
-            self.retry_btn.configure(state="normal", text=f"Retry failed ({len(songs)})")
-        else:
-            self.retry_btn.configure(state="disabled", text="Retry failed")
-
-    def retry_failed(self):
-        if not self.failed or not self._job or self.start_btn.cget("state") == "disabled":
-            return
-        job = dict(self._job)
-        if not os.path.isdir(job["out_dir"]):
-            messagebox.showerror("Error", "The save folder no longer exists.")
-            return
-        job["songs"] = list(self.failed)
-        self._begin([job])
-
     def open_folder(self):
         d = self.folder_entry.get().strip()
         if not d or not os.path.isdir(d):
@@ -2495,11 +3242,6 @@ class SevbyApp(_SevbyBase):
         except Exception:
             pass
 
-    def _done_dialog(self, summary: str):
-        self._beep()
-        if messagebox.askyesno("SEVBY", summary + "\n\nOpen the folder?"):
-            self.open_folder()
-
     def open_spotify_dashboard(self):
         webbrowser.open("https://developer.spotify.com/dashboard")
 
@@ -2516,11 +3258,224 @@ class SevbyApp(_SevbyBase):
         self.client_id.focus_set()
         self.show_client_id_help()
 
+    def _checkpoint(self) -> bool:
+        """Hold while paused; return True if the user pressed Stop."""
+        while PAUSE_EVENT.is_set() and not STOP_EVENT.is_set():
+            time.sleep(0.2)
+        return STOP_EVENT.is_set()
+
+
+    def _info_box(self, title: str, msg: str):
+        self.after(0, lambda: messagebox.showinfo(title, msg))
+
+    def set_progress(self, fraction: float, label: str = ""):
+        """Kept for the engine: the bar is driven per song now, so only the step text matters."""
+        if label:
+            self.after(0, lambda: self.prog_step.configure(text=label))
+
+    # ---------------------------------------------------------------------------------------
+    # running
+    def _job_from_screen(self, out_dir: str) -> dict | None:
+        mode = self.mode.get()
+        job = {
+            "mode": mode, "out_dir": out_dir, "source": self.source.get(), "quality": self.quality.get(),
+            "free_hq": bool(self.free_hq.get()), "jamendo_id": self.jamendo_id.get().strip(),
+            "raw": self.songs_box.get("1.0", "end") if mode == "txt" else "",
+            "url": self.sp_url.get().strip(), "cid": self.client_id.get().strip(),
+            "secret": self.client_secret.get().strip(), "songs": None,
+        }
+        return job
+
+    def start(self):
+        if self.running:
+            self.stop()
+            return
+        # songs still in the box while a queue is waiting: they go to the end of the queue first
+        if self.queue and self.mode.get() == "txt" and parse_song_lines(self.songs_box.get("1.0", "end")):
+            self.add_to_queue()
+        if self.queue:
+            bad = [j for j in self.queue if not os.path.isdir(j["out_dir"])]
+            if bad:
+                messagebox.showerror("Error", "A save folder in the queue no longer exists. Clear the queue "
+                                              "or choose the folder again.")
+                return
+            self._save_prefs()
+            self._begin(list(self.queue))
+            return
+        out_dir = self.folder_entry.get().strip()
+        if not out_dir or not os.path.isdir(out_dir):
+            messagebox.showerror("Error", "Please choose a valid save folder.")
+            return
+        if self.mode.get() == "txt" and not parse_song_lines(self.songs_box.get("1.0", "end")):
+            messagebox.showinfo(APP_NAME, "Paste or load some songs first.")
+            return
+        if self.mode.get() == "spotify" and not self.client_id.get().strip():
+            try:
+                clip = self.clipboard_get().strip()
+            except Exception:
+                clip = ""
+            if re.fullmatch(r"[0-9a-fA-F]{32}", clip):
+                self.client_id.insert(0, clip)
+                self.log("Pasted your Client ID from the clipboard.")
+            else:
+                self._need_client_id()
+                return
+        job = self._job_from_screen(out_dir)
+        self._save_prefs()
+        self._begin([job])
+
+    def _begin(self, jobs: list):
+        try:
+            LOG_PATH.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+        self._job = jobs[0] if len(jobs) == 1 else None
+        self.run_mode = jobs[0]["mode"]
+        self.running = True
+        self._list_n = len(jobs)
+        self._list_i = 1
+        self._counts = {"ok": 0, "skip": 0, "fail": 0}
+        self._new_failed: list[tuple[str, str, dict]] = []
+        STOP_EVENT.clear()
+        PAUSE_EVENT.clear()
+        self.retry_btn.pack_forget()
+        self.sv_clear()
+        self.details_box.configure(state="normal")
+        self.details_box.delete("1.0", "end")
+        self.details_box.configure(state="disabled")
+        self._set_inputs(False)
+        self.start_btn.configure(text="Stop", fg_color=C_ERR_BG, hover_color="#a33a3a", text_color="white")
+        self.pause_btn.configure(state="normal", text="Pause")
+        self.prog_frame.pack(fill="x", padx=22, pady=(4, 6), before=self.log_card)
+        if self._list_n > 1:
+            self.list_heading.pack(fill="x", padx=12, pady=(10, 0), before=self.prog_frame.winfo_children()[1])
+        self.prog_song.configure(text="Starting\u2026")
+        self.prog_step.configure(text="")
+        self.progress.set(0)
+        self.prog_pct.configure(text="0%")
+        self._set_log_header("Log \u00b7 starting")
+        self._set_status("Working")
+        self._refresh_queue_ui()
+        threading.Thread(target=self._worker, args=(jobs,), daemon=True).start()
+
+    # -- Queue ---------------------------------------------------------------------------------
+    def add_to_queue(self):
+        """Snapshot what is on screen as one queue item, then clear the inputs for the next one."""
+        if self.running:
+            return
+        out_dir = self.folder_entry.get().strip()
+        if not out_dir or not os.path.isdir(out_dir):
+            messagebox.showerror("Error", "Choose a save folder first \u2014 each queue item is saved "
+                                          "in its own folder inside it.")
+            return
+        mode = self.mode.get()
+        job = self._job_from_screen(out_dir)
+        job.update(raw="", url="", cid="", secret="")
+        if mode == "txt":
+            raw = self.songs_box.get("1.0", "end")
+            songs = parse_song_lines(raw)
+            if not songs:
+                messagebox.showinfo(APP_NAME, "Paste or load some songs first.")
+                return
+            base = sanitize_filename(self._loaded_name).strip(". ") or f"Song list {len(self.queue) + 1}"
+            name, k = base, 2
+            while any(j.get("subfolder") == name for j in self.queue):
+                name, k = f"{base} ({k})", k + 1
+            job.update(raw=raw, name=name, count=len(songs), subfolder=name)
+            self.songs_box.delete("1.0", "end")
+            self._loaded_name = ""
+        else:
+            url = self.sp_url.get().strip()
+            cid = self.client_id.get().strip()
+            m = re.search(r"playlist[/:]([a-zA-Z0-9]+)", url)
+            if not m:
+                messagebox.showinfo(APP_NAME, "Paste a Spotify playlist link first.")
+                return
+            if not cid:
+                messagebox.showinfo(APP_NAME, "Enter your Spotify Client ID first.")
+                return
+            job.update(url=url, cid=cid, secret=self.client_secret.get().strip(),
+                       name=f"Spotify playlist \u2026{m.group(1)[:6]}", count=0, subfolder=True)
+            self.sp_url.delete(0, "end")
+        self.queue.append(job)
+        self._refresh_queue_ui()
+        self._save_queue()
+        self._save_prefs()
+
+    def clear_queue(self):
+        if self.running:
+            return
+        self.queue.clear()
+        self._refresh_queue_ui()
+        self._save_queue()
+
+    def _queue_remove(self, job: dict):
+        if job.get("_running"):
+            return
+        self.queue = [j for j in self.queue if j is not job]
+        self._refresh_queue_ui()
+        self._save_queue()
+
+    def _refresh_queue_ui(self):
+        n = len(self.queue)
+        for w in self.queue_rows.winfo_children():
+            w.destroy()
+        if n:
+            self.queue_title.configure(text=f"Queue ({n})")
+            for i, j in enumerate(self.queue, 1):
+                row = ctk.CTkFrame(self.queue_rows, fg_color="transparent")
+                row.pack(fill="x")
+                cnt = f" \u00b7 {j['count']} songs" if j.get("count") else ""
+                ctk.CTkLabel(row, text=f"{i}. {j.get('name', 'List')}{cnt}", anchor="w").pack(side="left")
+                if not j.get("_running"):
+                    ctk.CTkButton(row, text="\u2715", width=26, height=22, fg_color="transparent",
+                                  hover_color="#2a2a30", text_color=C_MUTED,
+                                  command=lambda jj=j: self._queue_remove(jj)).pack(side="right")
+            if not self.queue_card.winfo_ismapped():
+                self.queue_card.pack(fill="x", padx=22, pady=(12, 0), before=self.folder_label)
+        else:
+            self.queue_card.pack_forget()
+        self.clear_btn.configure(state="disabled" if self.running else "normal")
+        if not self.running:
+            self.start_btn.configure(text=f"Start Download ({n} list{'' if n == 1 else 's'})" if n else "Start Download")
+
+    # -- Retry ---------------------------------------------------------------------------------
+    def _show_retry(self):
+        n = len(self.failed_items)
+        if n:
+            self.retry_btn.configure(text=f"Retry failed ({n})")
+            self.retry_btn.pack(side="left", padx=(8, 0))
+        else:
+            self.retry_btn.pack_forget()
+
+    def retry_failed(self):
+        if not self.failed_items or self.running:
+            return
+        groups: dict[str, list[str]] = {}
+        base: dict[str, dict] = {}
+        for song, folder, job in self.failed_items:
+            groups.setdefault(folder, []).append(song)
+            base.setdefault(folder, job)
+        jobs = []
+        for folder, songs in groups.items():
+            if not os.path.isdir(folder):
+                os.makedirs(folder, exist_ok=True)
+            j = dict(base[folder])
+            j.update(songs=songs, out_dir=folder, exact_dir=True, subfolder=None,
+                     name=os.path.basename(folder) or folder, count=len(songs))
+            jobs.append(j)
+        self._begin(jobs)
+
+    def _done_dialog(self, summary: str):
+        self._beep()
+        if messagebox.askyesno(APP_NAME, summary + "\n\nOpen the folder?"):
+            self.open_folder()
+
     def stop(self):
         """Abort the current download and end the run."""
         STOP_EVENT.set()
         PAUSE_EVENT.clear()
-        self.stop_btn.configure(state="disabled")
+        self.start_btn.configure(state="disabled", text="Stopping\u2026")
         self.pause_btn.configure(state="disabled")
         self.log("Stopping\u2026 (cancelling the current download)")
 
@@ -2529,68 +3484,90 @@ class SevbyApp(_SevbyBase):
         if PAUSE_EVENT.is_set():
             PAUSE_EVENT.clear()
             self.pause_btn.configure(text="Pause")
-            self.set_progress(self.progress.get(), "Running")
+            self._set_status("Working")
             self.log("Resumed.")
         else:
             PAUSE_EVENT.set()
             self.pause_btn.configure(text="Resume")
-            self.set_progress(self.progress.get(), "Paused")
+            self._set_status("Paused")
+            self.prog_step.configure(text="Paused \u00b7 tap Resume to carry on")
+            self._set_log_header("Log \u00b7 paused")
             self.log("Pausing after the current song finishes\u2026")
 
-    def _checkpoint(self) -> bool:
-        """Hold while paused; return True if the user pressed Stop."""
-        while PAUSE_EVENT.is_set() and not STOP_EVENT.is_set():
-            time.sleep(0.2)
-        return STOP_EVENT.is_set()
+    def sv_stopped(self, song: str):
+        """The run was stopped while this song was in progress: say clearly that it was not saved."""
+        def f(t):
+            if self._cur_start:
+                t.delete(self._cur_start, "end-1c")
+            t.insert("end", "\u25a0 ", "skip")
+            t.insert("end", song + "\n", "skip")
+            t.insert("end", "    stopped before it finished (not saved)\n", "note")
+            self._cur_start = None
+        self.after(0, lambda: self._sv(f))
+
+    def sv_pause_mark(self, on: bool):
+        """A visible line while paused, so it's clear everything above is already finished and saved."""
+        def f(t):
+            if on:
+                self._pause_start = t.index("end-1c")
+                t.insert("end", "PAUSED \u00b7 the songs above are finished and saved. Press Resume to carry on.\n", "sum")
+            elif getattr(self, "_pause_start", None):
+                t.delete(self._pause_start, "end-1c")
+                self._pause_start = None
+        self.after(0, lambda: self._sv(f))
+
+    def sv_drop_now(self):
+        """Remove the unfinished 'current song' entry (used when the run is stopped mid-song)."""
+        def f(t):
+            if self._cur_start:
+                t.delete(self._cur_start, "end-1c")
+            self._cur_start = None
+        self.after(0, lambda: self._sv(f))
+
+    def _job_error(self, job: dict, msg: str):
+        self.log(msg)
+        first = msg.strip().splitlines()[0] if msg.strip() else "Couldn't start"
+        self.sv_summary("\u2717 " + first)
 
     def _run_job(self, job: dict):
         out_dir = job["out_dir"]
         source = job["source"]
-        use_bc = source != "YouTube only"
-        use_yt = source != "Bandcamp only"
+        opts = {"use_bc": source != "YouTube only", "use_yt": source != "Bandcamp only",
+                "free": bool(job.get("free_hq", True))}
         QUALITY["best"] = str(job.get("quality", "")).startswith("Best")
-        QUALITY["free"] = bool(job.get("free_hq", True))
+        QUALITY["free"] = opts["free"]
         QUALITY["jamendo_id"] = job.get("jamendo_id", "") or ""
         HQ_SONGS.clear()
         try:
             songs: list[str] = []
-
             if job.get("songs") is not None:
                 songs = list(job["songs"])
                 self.log(f"Retrying {len(songs)} song(s) that failed last time.")
             elif job["mode"] == "txt":
                 songs = parse_song_lines(job["raw"])
                 if not songs:
-                    self.log("No songs found. Paste a list or load a .txt file.")
+                    self._job_error(job, "No songs found. Paste a list or load a .txt file.")
                     return
                 self.log(f"Using {len(songs)} songs from list/file.")
             else:
                 url, cid, secret = job["url"], job["cid"], job["secret"]
                 if not url or "spotify" not in url.lower():
-                    self.log("Enter a valid Spotify playlist URL.")
+                    self._job_error(job, "Enter a valid Spotify playlist URL.")
                     return
                 if not cid:
-                    self.log(
-                        "Client ID required for Spotify links.\n"
-                        "Click \u201cWhat is this?\u201d for the 2-minute one-time setup.\n"
-                        "Or switch to Song list / .txt mode (no keys needed)."
-                    )
+                    self._job_error(job, "Client ID required for Spotify links. Use Song list mode if you have none.")
                     return
                 cfg = load_config()
                 cfg["client_id"] = cid
                 if secret:
                     cfg["client_secret"] = secret
                 save_config(cfg)
-
                 self.log("Connecting to Spotify\u2026")
                 token = get_spotify_access_token(cid, secret, self.log)
                 if not token:
-                    self.log(
-                        "Spotify login failed.\n"
-                        "Check the Client ID and that the Redirect URI in your Spotify app is exactly "
-                        "http://127.0.0.1:8888\n"
-                        "Or export with Chosic and use Song list / .txt instead."
-                    )
+                    self._job_error(job, "Spotify login failed. Check the Client ID and that the Redirect URI in "
+                                         "your Spotify app is exactly http://127.0.0.1:8888 - or export with Chosic "
+                                         "and use Song list mode.")
                     return
                 if job.get("subfolder") is True:  # queued playlist: folder named after it
                     try:
@@ -2598,248 +3575,160 @@ class SevbyApp(_SevbyBase):
                     except Exception:
                         nm = ""
                     job["subfolder"] = sanitize_filename(nm).strip(". ") or "Spotify playlist"
+                    job["name"] = job["subfolder"]
                 self.log("Fetching Spotify playlist\u2026")
                 try:
                     songs = fetch_spotify_tracks(url, token)
                 except Exception as e:
-                    self.log(f"Spotify error: {e}")
-                    self.log("Export with Chosic and use Song list / .txt if this keeps happening.")
+                    self._job_error(job, f"Spotify error: {e}")
                     return
                 if not songs:
-                    self.log("No tracks returned (empty playlist?).")
+                    self._job_error(job, "No tracks returned (empty playlist?).")
                     return
                 self.log(f"Found {len(songs)} tracks on Spotify.")
 
             sub = job.get("subfolder")
-            if isinstance(sub, str) and sub:
+            if isinstance(sub, str) and sub and not job.get("exact_dir"):
                 out_dir = os.path.join(out_dir, sub)
                 os.makedirs(out_dir, exist_ok=True)
-                self.log(f"Saving into: {out_dir}")
+            self.log(f"Saving into: {out_dir}")
 
-            can_download = have_ytdlp()
-            if not can_download:
-                self.log("yt-dlp not installed \u2014 will only collect Bandcamp links (pip install yt-dlp).")
+            if not have_ytdlp():
+                self.log("yt-dlp is not installed, so only free sources can be used.")
             else:
                 age = ytdlp_age_days()
                 if age is not None and age > 90:
-                    self.log(
-                        f"Heads-up: this copy of yt-dlp is {age} days old. YouTube and Bandcamp change often \u2014 "
-                        "if downloads fail (e.g. HTTP 403), update it with  pip install -U yt-dlp  "
-                        "and rebuild SEVBY."
-                    )
-            if source != "Both":
-                self.log(f"Source: {source}.")
+                    self.log(f"Heads-up: this copy of yt-dlp is {age} days old. If YouTube downloads fail, "
+                             "open About & updates and update it.")
             self.log("YouTube audio: " + ("Best available (original M4A kept, no re-encoding)."
                                            if QUALITY["best"] else "Standard (converted to MP3)."))
 
-            # progress ranges depend on which sources are on
-            if use_bc and use_yt:
-                search_end, dl_end, yt_start = 0.3, 0.65, 0.65
-            elif use_bc:
-                search_end, dl_end, yt_start = 0.4, 1.0, 1.0
-            else:
-                search_end, dl_end, yt_start = 0.0, 0.0, 0.0
-
-            not_found: list[str] = []
-            bc_ok = 0
-            free_ok = 0
-            if QUALITY["free"] and songs:
-                self.log("\u2500" * 40)
-                self.log("Checking Jamendo" + (" and " if QUALITY["jamendo_id"] else " (no Client ID, skipped) and ")
-                         + "Internet Archive for lossless Creative Commons copies\u2026")
-                remaining: list[str] = []
-                total0 = len(songs)
-                for i, song in enumerate(songs, 1):
-                    if self._checkpoint():
-                        break
-                    self.set_progress(0.05 * (i / total0), f"Free sources {i}/{total0}")
-                    self.log(f"[{i}/{total0}] {song}")
-                    if download_free_hq(song, out_dir, self.log):
-                        free_ok += 1
-                    else:
-                        remaining.append(song)
-                        self.log("  \u2192 not found there")
-                if STOP_EVENT.is_set():
-                    self._finish_stopped()
-                    return
-                self.log(f"Free sources: {free_ok} found, {len(remaining)} to look for elsewhere")
-                songs = remaining
             n = len(songs)
-
-            if use_bc:
-                # \u2500\u2500 Pass 1: Bandcamp search \u2500\u2500
-                self.log("\u2500" * 40)
-                self.log("Searching Bandcamp\u2026")
-                bc_hits: list[tuple[str, str]] = []  # (song, url)
-                consecutive_errors = 0
-                bandcamp_down = False
-
-                for i, song in enumerate(songs, 1):
-                    if self._checkpoint():
-                        break
-                    self.set_progress(search_end * (i / n), f"Search {i}/{n}")
-                    self.log(f"[{i}/{n}] {song}")
-                    result = search_bandcamp(song, use_api=not bandcamp_down)
-                    if result.get("found") and result.get("url"):
-                        consecutive_errors = 0
-                        bc_hits.append((song, result["url"]))
-                        self.log(
-                            f"  \u2192 Bandcamp: {result['url']}"
-                            + (" (found by trying the artist's page)" if result.get("guessed") else "")
-                        )
-                    else:
-                        not_found.append(song)
-                        err = result.get("error")
-                        if err:
-                            consecutive_errors += 1
-                            self.log(f"  \u2192 Bandcamp search failed: {err}")
-                            if consecutive_errors >= 3:
-                                bandcamp_down = True
-                                self.log(
-                                    "Bandcamp's search keeps refusing SEVBY (it shows a JavaScript bot check).\n"
-                                    "For the rest of this run SEVBY will try each artist's own Bandcamp "
-                                    "page instead, and use YouTube for anything it can't find.\n"
-                                    "To test your connection, run this in PowerShell and tell me what it prints:\n"
-                                    '  curl.exe -s "https://bandcamp.com/api/fuzzysearch/2/app_autocomplete?q=Perturbator"'
-                                )
-                        else:
-                            consecutive_errors = 0
-                            self.log("  \u2192 not on Bandcamp")
-                    time.sleep(0.25)
-
-                self.log(f"Bandcamp: {len(bc_hits)} found, {len(not_found)} missing")
-
-                if STOP_EVENT.is_set():
-                    self._finish_stopped()
-                    return
-
-                # \u2500\u2500 Pass 2: download the Bandcamp tracks \u2500\u2500
-                if bc_hits and can_download:
-                    self.log("\u2500" * 40)
-                    self.log(f"Downloading {len(bc_hits)} songs from Bandcamp\u2026")
-                    b = len(bc_hits)
-                    for i, (song, bc_url) in enumerate(bc_hits, 1):
-                        if self._checkpoint():
-                            break
-                        self.set_progress(
-                            search_end + (dl_end - search_end) * (i / b), f"Bandcamp {i}/{b}"
-                        )
-                        self.log(f"[{i}/{b}] {song}")
-                        if download_bandcamp_mp3(bc_url, song, out_dir, self.log):
-                            bc_ok += 1
-                        elif not STOP_EVENT.is_set():
-                            self.log("  \u2192 will try YouTube instead" if use_yt else "  \u2192 failed")
-                            not_found.append(song)
-                elif bc_hits:
-                    not_found.extend(s for s, _ in bc_hits)
-
-                if STOP_EVENT.is_set():
-                    self._finish_stopped()
-                    return
-            else:
-                not_found = list(songs)
-
-            # \u2500\u2500 Pass 3: YouTube for the rest \u2500\u2500
-            yt_ok = 0
-            failed: list[str] = []
-            if use_yt and not_found:
-                if not can_download:
-                    self.log("yt-dlp isn't installed, so songs not on Bandcamp can't be downloaded.")
-                    failed = list(not_found)
+            name = job.get("name") or os.path.basename(out_dir) or "Songs"
+            where = os.path.basename(out_dir) or out_dir
+            self.sv_heading(f"\u25b8 {name} \u00b7 {n} songs \u2192 {where}")
+            state: dict = {}
+            c = {"ok": 0, "skip": 0, "fail": 0}
+            stopped = False
+            for i, song in enumerate(songs, 1):
+                if PAUSE_EVENT.is_set() and not STOP_EVENT.is_set():
+                    self.sv_pause_mark(True)
+                    held = True
                 else:
-                    self.log("\u2500" * 40)
-                    self.log(f"Downloading {len(not_found)} songs from YouTube\u2026")
-                    m = len(not_found)
-                    for i, song in enumerate(not_found, 1):
-                        if self._checkpoint():
-                            break
-                        self.set_progress(
-                            yt_start + (1.0 - yt_start) * (i / m), f"YouTube {i}/{m}"
-                        )
-                        self.log(f"[{i}/{m}] {song}")
-                        if download_youtube_mp3(song, out_dir, self.log):
-                            yt_ok += 1
-                        elif not STOP_EVENT.is_set():
-                            failed.append(song)
+                    held = False
+                if self._checkpoint():
+                    if held:
+                        self.sv_pause_mark(False)
+                    stopped = True
+                    break
+                if held:
+                    self.sv_pause_mark(False)
+                self.sv_now(i, n, song)
+                self.log("-" * 40)
+                self.log(f"[{i}/{n}] {song}")
+                try:
+                    res = process_song(song, out_dir, opts, state, self.log, self.sv_step)
+                except _Stopped:
+                    res = {"status": "fail", "note": "stopped"}
+                except Exception as e:
+                    self.log(f"  Unexpected error: {e}")
+                    res = {"status": "fail", "note": "unexpected error (see Details)"}
+                if STOP_EVENT.is_set() and res.get("status") == "fail" and res.get("note") == "stopped":
+                    self.sv_stopped(song)
+                    stopped = True
+                    break
+                st = res.get("status")
+                if st == "ok":
+                    c["ok"] += 1
+                elif st in ("skip", "dup"):
+                    c["skip"] += 1
+                else:
+                    c["fail"] += 1
+                    self._new_failed.append((song, out_dir, job))
+                self._counts[{"ok": "ok", "skip": "skip", "dup": "skip"}.get(st, "fail")] += 1
+                self.sv_result(i, n, song, res)
+                if res.get("note"):
+                    self.log(f"  => {res['note']}")
 
-                    if STOP_EVENT.is_set():
-                        self.log(f"So far \u2014 Bandcamp: {bc_ok} ok \u00b7 YouTube: {yt_ok} ok, {len(failed)} failed.")
-                        self._finish_stopped()
-                        if not job.get("quiet"):
-                            self.after(0, lambda f=list(failed): self._set_failed(f))
-                        return
-            elif not use_yt:
-                failed = list(not_found)  # Bandcamp-only: whatever it couldn't get
-
-            self.set_progress(1.0, "Done")
-            self.log("\u2500" * 40)
-            parts = []
-            if QUALITY["free"]:
-                parts.append(f"Jamendo/Archive: {free_ok} ok")
-            if use_bc:
-                parts.append(f"Bandcamp: {bc_ok} ok")
-            if use_yt:
-                parts.append(f"YouTube: {yt_ok} ok")
-            parts.append(f"{len(failed)} failed")
-            summary = " \u00b7 ".join(parts)
-            self.log(f"Done. {summary}.")
+            summary = f"{c['ok']} downloaded"
+            if c["skip"]:
+                summary += f" \u00b7 {c['skip']} already there"
+            if c["fail"]:
+                summary += f" \u00b7 {c['fail']} failed"
+            self.log("=" * 40)
+            self.log(f"{'Stopped' if stopped else 'Done'}. {summary}.")
             self.log(f"Folder: {out_dir}")
-            if QUALITY["best"]:
+            if QUALITY["best"] and not stopped:
                 write_hq_links(out_dir, self.log)
-            if failed:
-                self.log("Songs that could not be downloaded (press \u201cRetry failed\u201d to try them again):")
-                for song in failed:
-                    self.log(f"  \u2717 {song}")
-            job["_summary"] = summary
-            if not job.get("quiet"):
-                self.after(0, lambda f=list(failed): self._set_failed(f))
-                self.after(0, lambda: self._done_dialog("Finished.\n" + summary.replace(" \u00b7 ", "\n")))
+            if not stopped:
+                job["_summary"] = summary
+                self.sv_summary("Done \u00b7 " + summary.replace(" \u00b7 ", " \u00b7 "))
         except Exception as e:
             self.log(f"Unexpected error: {e}")
 
+
     def _worker(self, jobs: list):
         """Run one job, or a whole queue - strictly one after the other."""
+        lines = []
+        stopped = False
         try:
             total = len(jobs)
-            lines = []
             for k, job in enumerate(jobs, 1):
                 if STOP_EVENT.is_set():
                     break
+                self._list_i = k
+                job["_running"] = True
+                self.after(0, self._refresh_queue_ui)
                 if total > 1:
-                    self.log("\u2550" * 40)
-                    self.log(f"Queue {k}/{total}: {job['name']}")
-                    job["quiet"] = True
+                    self.log("=" * 40)
+                    self.log(f"List {k}/{total}: {job.get('name', '')}")
                 self._run_job(job)
-                if total > 1 and not STOP_EVENT.is_set():
-                    if "_summary" in job:
-                        lines.append(f"{job['name']}: {job['_summary']}")
-                        self.after(0, lambda j=job: self._queue_remove(j))  # done \u2192 leaves the queue
-                    else:
-                        lines.append(f"{job['name']}: did not run (kept in the queue)")
-            if total > 1 and not STOP_EVENT.is_set():
-                self.set_progress(1.0, "Done")
-                self.log("\u2550" * 40)
-                self.log(f"Queue finished ({total} items).")
-                self.after(0, lambda: self._done_dialog("Queue finished.\n\n" + "\n".join(lines)))
+                job["_running"] = False
+                if "_summary" in job:
+                    lines.append(f"{job.get('name', 'List')}: {job['_summary']}")
+                    if job in self.queue:  # finished lists leave the queue
+                        self.queue = [j for j in self.queue if j is not job]
+                        self._save_queue()
+            stopped = STOP_EVENT.is_set()
         except Exception as e:
             self.log(f"Unexpected error: {e}")
         finally:
             PAUSE_EVENT.clear()
-            self.after(0, self._reset_buttons)
+            self.after(0, lambda: self._finish(stopped, lines))
 
-    def _finish_stopped(self):
-        self.set_progress(self.progress.get(), "Stopped")
-        self.log("\u2500" * 40)
-        self.log("Stopped. Songs already downloaded are kept; run again to continue "
-                 "(finished songs are skipped).")
-
-    def _reset_buttons(self):
+    def _finish(self, stopped: bool, lines: list):
+        self.running = False
         self.run_mode = None
-        self.start_btn.configure(state="normal")
-        self.add_btn.configure(state="normal")
-        self._refresh_queue_ui()
+        c = self._counts
+        summary = f"{c['ok']} downloaded"
+        if c["skip"]:
+            summary += f" \u00b7 {c['skip']} already there"
+        if c["fail"]:
+            summary += f" \u00b7 {c['fail']} failed"
+        if stopped:
+            self._set_log_header(f"Log \u00b7 Stopped \u00b7 {summary}")
+            self.prog_step.configure(text="Stopped")
+            self._set_status("Stopped")
+            self.sv_summary("Stopped \u00b7 " + summary)
+            # a stopped run keeps the previous failed list
+        else:
+            self._set_log_header(f"Log \u00b7 Done \u00b7 {summary}")
+            self.prog_step.configure(text="Done")
+            self.progress.set(1.0)
+            self.prog_pct.configure(text="100%")
+            self._set_status("Ready")
+            self.failed_items = list(self._new_failed)
+        self._show_retry()
+        self.start_btn.configure(state="normal", fg_color=C_ACCENT, hover_color=C_ACCENT_H, text_color=C_ON_ACCENT)
         self.pause_btn.configure(state="disabled", text="Pause")
-        self.stop_btn.configure(state="disabled")
+        self._set_inputs(True)
+        self._refresh_queue_ui()
+        self.list_heading.pack_forget()
+        if not stopped and (c["ok"] or c["skip"] or c["fail"]):
+            body = "Finished.\n" + summary.replace(" \u00b7 ", "\n")
+            if len(lines) > 1:
+                body = "Queue finished.\n\n" + "\n".join(lines)
+            self._done_dialog(body)
 
 
 if __name__ == "__main__":

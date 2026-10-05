@@ -29,3 +29,5 @@ SEVBY HQ talks to these services but is not affiliated with, endorsed by, or spo
 - **Internet Archive**: public search and download of Creative Commons-licensed audio. Not affiliated.
 - **Bandcamp**: public track pages.
 - **YouTube / Google**: public videos.
+- **Apple iTunes Search API**: public search, used only to look up album name, year, track number and cover for a song when Bandcamp doesn't provide them. Not affiliated with Apple.
+- **GitHub**: the "About & updates" screen asks GitHub for the newest yt-dlp release and, if you press Update, downloads that file from the official yt-dlp releases page into your user folder.

@@ -45,7 +45,13 @@ The first two only know music its artists chose to release freely, so most mains
 - Choose **Best available (M4A)** or **Standard (MP3)** for YouTube audio
 - Title, artist, album, year, track number and square cover art
 - YouTube matching picks the version with the right length and avoids live / remix / sped-up uploads
-- Pause, Stop, *Retry failed*, *Open folder*, and a **queue** of several lists
+- Pause, Stop, *Retry failed (N)* (re-runs only the failed songs, into the right folders), *Open folder*
+- A **queue** of several lists, each saved into its own sub-folder; the queue is remembered if you close the app
+- A tidy, collapsible **song log** (one entry per song with where it came from), plus a *Details* view and *Copy log* for bug reports
+- Songs already in the folder are skipped (even after an interrupted run); a song listed twice is only downloaded once
+- Smarter matching: prefers the artist's own release over compilations, live albums and "Expanded Edition" reissues; album info from iTunes when Bandcamp has none
+- Retries automatically when the internet drops for a moment
+- **About & updates**: shows the yt-dlp version, checks once a day and updates it with one click (restart afterwards), plus diagnostics and a network test
 - Runs locally. No account, nothing is uploaded anywhere
 
 ## Quick start
@@ -106,7 +112,7 @@ The `dist/` folder then contains `SEVBY-HQ` (or `SEVBY-HQ.exe`). The GitHub Acti
 
 ## Troubleshooting
 
-- **Downloads suddenly stop working (especially from YouTube)** - the downloader inside (yt-dlp) needs updating. The files on the **Releases** page are rebuilt automatically every month, so download the newest zip. Termux and source users can run `pip install -U yt-dlp`. This is a hobby project maintained when time allows, so fixes are not guaranteed.
+- **Downloads suddenly stop working (especially from YouTube)** - the downloader inside (yt-dlp) needs updating. Open **About & updates** and press the update button, then restart. The files on the **Releases** page are also rebuilt automatically every month. Termux and source users can run `pip install -U yt-dlp`. This is a hobby project maintained when time allows, so fixes are not guaranteed.
 - **A song plays on my phone but not in my car / old MP3 player** - choose *Standard (MP3)* (or use `--quality standard` in Termux) or use the original SEVBY.
 - **"Bandcamp blocked / Client Challenge"** - SEVBY HQ then tries each artist's own Bandcamp page and uses YouTube for the rest.
 - A copy of each run's log is saved to `~/.sevby_hq_log.txt` - attach it to bug reports.
