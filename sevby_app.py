@@ -2329,6 +2329,96 @@ def ytdlp_latest_tag() -> str | None:
         return None
 
 
+APP_REPO_URL = "https://github.com/Obamna1234/sevby-hq"
+UPDATE_PRERELEASES = True  # HQ is a beta; the plain SEVBY build ignores pre-releases
+
+
+def app_ver_cmp(a: str, b: str) -> int:
+    """Compare two app versions. 1.0.1 > 1.0.0; a finished 1.0.0 beats 1.0.0-beta; 0.10.0 > 0.9.2."""
+    def split(v):
+        v = str(v or "").strip().lower().lstrip("v").split(" ")[0]
+        core, _, pre = v.partition("-")
+        nums = [int(x) if x.isdigit() else 0 for x in core.split(".")]
+        parts = [x for x in re.split(r"[.\-]", pre) if x]
+        return nums, parts
+    ca, pa = split(a)
+    cb, pb = split(b)
+    n = max(len(ca), len(cb))
+    ca += [0] * (n - len(ca))
+    cb += [0] * (n - len(cb))
+    if ca != cb:
+        return 1 if ca > cb else -1
+    if not pa and not pb:
+        return 0
+    if not pa:
+        return 1
+    if not pb:
+        return -1
+    rank = {"dev": 0, "alpha": 1, "beta": 2, "rc": 3}
+    for i in range(max(len(pa), len(pb))):
+        if i >= len(pa):
+            return -1
+        if i >= len(pb):
+            return 1
+        x, y = pa[i], pb[i]
+        if x.isdigit() and y.isdigit():
+            if int(x) != int(y):
+                return 1 if int(x) > int(y) else -1
+        elif x.isdigit() != y.isdigit():
+            return 1 if x.isdigit() else -1
+        elif x != y:
+            rx, ry = rank.get(x, 2), rank.get(y, 2)
+            return 1 if (rx, x) > (ry, y) else -1
+    return 0
+
+
+def app_pick_release(releases, include_pre: bool = False):
+    """Newest desktop release from GitHub's /releases list: skips drafts, android-v... releases,
+    releases with no files yet (still building) and (unless asked) pre-releases."""
+    best = None
+    plat = "windows" if sys.platform.startswith("win") else "macos" if sys.platform == "darwin" else "linux"
+    for r in releases if isinstance(releases, list) else []:
+        try:
+            tag = str(r.get("tag_name") or "")
+            if not tag or r.get("draft") or tag.lower().startswith("android"):
+                continue
+            if r.get("prerelease") and not include_pre:
+                continue
+            assets = [a for a in (r.get("assets") or []) if isinstance(a, dict)]
+            if not assets:
+                continue
+            ver = tag.lstrip("vV")
+            if not re.match(r"\d", ver):
+                continue
+            url = ""
+            for a in assets:
+                name = str(a.get("name") or "").lower()
+                if plat in name or (plat == "windows" and name.endswith(".exe")):
+                    url = a.get("browser_download_url") or ""
+                    break
+            rel = {"version": ver, "page": r.get("html_url") or APP_REPO_URL + "/releases", "url": url}
+            if best is None or app_ver_cmp(ver, best["version"]) > 0:
+                best = rel
+        except Exception:
+            continue
+    return best
+
+
+def app_latest_release():
+    """(checked, release). checked is False when GitHub couldn't be reached."""
+    try:
+        path = APP_REPO_URL.split("github.com/")[1]
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{path}/releases?per_page=30",
+            headers={"User-Agent": "SEVBY", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return True, app_pick_release(data, UPDATE_PRERELEASES)
+    except Exception:
+        return False, None
+
+
 def download_ytdlp_update(tag: str) -> tuple[bool, str]:
     """Download the official yt-dlp release file into the user's folder. It is picked up on next start."""
     try:
@@ -2444,6 +2534,17 @@ class SevbyApp(_SevbyBase):
         ctk.CTkButton(self.banner, text="Update", width=80, height=28, fg_color=C_ACCENT,
                       hover_color=C_ACCENT_H, text_color=C_ON_ACCENT,
                       command=self.show_about).pack(side="right", padx=10, pady=6)
+
+        self.app_banner = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=8)  # shown when a newer SEVBY exists
+        self.app_banner_label = ctk.CTkLabel(self.app_banner, text="", anchor="w", text_color=C_ACCENT)
+        self.app_banner_label.pack(side="left", padx=12, pady=8)
+        ctk.CTkButton(self.app_banner, text="Later", width=60, height=28, fg_color="transparent",
+                      hover_color="#2a2a30", text_color=C_MUTED,
+                      command=self.app_banner.pack_forget).pack(side="right", padx=(0, 10), pady=6)
+        ctk.CTkButton(self.app_banner, text="Download", width=90, height=28, fg_color=C_ACCENT,
+                      hover_color=C_ACCENT_H, text_color=C_ON_ACCENT,
+                      command=self.open_app_update).pack(side="right", padx=6, pady=6)
+        self._app_release = None
 
         # -- Mode switch ----------------------------------------------------------------------
         self.mode = ctk.StringVar(value=cfg.get("last_mode") if cfg.get("last_mode") in ("txt", "spotify") else "txt")
@@ -2757,6 +2858,7 @@ class SevbyApp(_SevbyBase):
     def _init_status(self):
         self._set_status("Ready")
         threading.Thread(target=self._check_ytdlp_daily, daemon=True).start()
+        threading.Thread(target=self._check_app_daily, daemon=True).start()
 
     def _set_status(self, text: str):
         self.status_label.configure(text=f"{text} \u00b7 yt-dlp {ytdlp_version()}")
@@ -2778,6 +2880,48 @@ class SevbyApp(_SevbyBase):
         except Exception:
             pass
 
+    def _check_app_daily(self, force: bool = False):
+        """Once a day, look for a newer SEVBY release on GitHub (remembers the answer)."""
+        try:
+            cfg = load_config()
+            now = time.time()
+            if force or now - float(cfg.get("app_check_time") or 0) > 86400:
+                checked, rel = app_latest_release()
+                if checked:
+                    cfg = load_config()
+                    cfg["app_latest"] = rel or {}
+                    cfg["app_check_time"] = now
+                    save_config(cfg)
+            self._app_release = self._app_available(load_config().get("app_latest"))
+            if self._app_release:
+                self.after(0, self._show_app_banner)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _app_available(rel):
+        if isinstance(rel, dict) and rel.get("version") and app_ver_cmp(rel["version"], VERSION) > 0:
+            return rel
+        return None
+
+    def _show_app_banner(self):
+        rel = self._app_release
+        if not rel:
+            return
+        self.app_banner_label.configure(text=f"{APP_NAME} {rel['version']} is available")
+        if not self.app_banner.winfo_ismapped():
+            self.app_banner.pack(fill="x", padx=22, pady=(0, 6), after=self.status_label)
+
+    def open_app_update(self):
+        rel = self._app_release
+        if not rel:
+            return
+        if self.running and not messagebox.askokcancel(
+                APP_NAME, "Your browser will download the new version. Updating means closing SEVBY, which "
+                          "stops a download in progress. Resume carries on afterwards. Continue?"):
+            return
+        webbrowser.open(rel.get("url") or rel.get("page") or APP_REPO_URL + "/releases")
+
     def _show_banner(self, latest: str):
         self.banner_label.configure(text=f"A newer yt-dlp ({latest}) is available")
         if not self.banner.winfo_ismapped():
@@ -2797,8 +2941,58 @@ class SevbyApp(_SevbyBase):
         body = ctk.CTkScrollableFrame(dlg, fg_color=C_BG)
         body.pack(fill="both", expand=True)
 
+        acard = ctk.CTkFrame(body, fg_color=C_SURFACE, corner_radius=10)
+        acard.pack(fill="x", padx=14, pady=(12, 0))
+        ctk.CTkLabel(acard, text=f"{APP_NAME} app", font=ctk.CTkFont(size=15, weight="bold"),
+                     anchor="w").pack(fill="x", padx=14, pady=(12, 0))
+        ctk.CTkLabel(acard, text=f"Version {VERSION}", anchor="w").pack(fill="x", padx=14)
+        astatus = ctk.CTkLabel(acard, text="", anchor="w", text_color=C_MUTED)
+        astatus.pack(fill="x", padx=14)
+        abtn = ctk.CTkButton(acard, text="Check for app updates", height=40, fg_color=C_ACCENT,
+                             hover_color=C_ACCENT_H, text_color=C_ON_ACCENT)
+        abtn.pack(fill="x", padx=14, pady=(8, 6))
+        ctk.CTkLabel(acard, justify="left", anchor="w", wraplength=440, text_color=C_MUTED,
+                     font=ctk.CTkFont(size=11),
+                     text="New versions of SEVBY (fixes and features) come from the project's GitHub releases. "
+                          "Your browser downloads the new file; close SEVBY and run it instead. Your folder, "
+                          "settings and queue are kept.").pack(fill="x", padx=14, pady=(0, 12))
+
+        def refresh_app():
+            rel = self._app_release
+            if rel:
+                astatus.configure(text=f"Update available: {rel['version']}", text_color=C_ACCENT)
+                abtn.configure(text=f"Download {rel['version']}", command=self.open_app_update, state="normal")
+            else:
+                done_once = bool(load_config().get("app_check_time"))
+                astatus.configure(text="Up to date \u2713" if done_once else "", text_color=C_MUTED)
+                abtn.configure(text="Check for app updates", command=do_app_check, state="normal")
+
+        def do_app_check():
+            abtn.configure(state="disabled", text="Checking\u2026")
+
+            def work():
+                checked, rel = app_latest_release()
+                def done():
+                    if checked:
+                        cfg = load_config()
+                        cfg["app_latest"] = rel or {}
+                        cfg["app_check_time"] = time.time()
+                        save_config(cfg)
+                        self._app_release = self._app_available(rel)
+                        if self._app_release:
+                            self._show_app_banner()
+                        refresh_app()
+                    else:
+                        astatus.configure(text="Couldn't reach GitHub. Check your internet connection.",
+                                          text_color=C_ERR)
+                        abtn.configure(state="normal", text="Check for app updates")
+                self.after(0, done)
+            threading.Thread(target=work, daemon=True).start()
+
+        refresh_app()
+
         card = ctk.CTkFrame(body, fg_color=C_SURFACE, corner_radius=10)
-        card.pack(fill="x", padx=14, pady=(12, 8))
+        card.pack(fill="x", padx=14, pady=(8, 8))
         ctk.CTkLabel(card, text="Downloader (yt-dlp)", font=ctk.CTkFont(size=15, weight="bold"),
                      anchor="w").pack(fill="x", padx=14, pady=(12, 0))
         ver = ctk.CTkLabel(card, text=f"Version {ytdlp_version()}", anchor="w")

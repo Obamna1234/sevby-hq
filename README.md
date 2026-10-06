@@ -51,7 +51,7 @@ The first two only know music its artists chose to release freely, so most mains
 - Songs already in the folder are skipped (even after an interrupted run); a song listed twice is only downloaded once
 - Smarter matching: prefers the artist's own release over compilations, live albums and "Expanded Edition" reissues; album info from iTunes when Bandcamp has none
 - Retries automatically when the internet drops for a moment
-- **About & updates**: shows the yt-dlp version, checks once a day and updates it with one click (restart afterwards), plus diagnostics and a network test
+- **About & updates**: shows the yt-dlp version, checks once a day and updates it with one click (restart afterwards), tells you when a newer SEVBY release is out (once a day, with a Download button), plus diagnostics and a network test
 - Runs locally. No account, nothing is uploaded anywhere
 
 ## Quick start
