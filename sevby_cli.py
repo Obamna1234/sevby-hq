@@ -8,6 +8,7 @@ so Bandcamp-first / YouTube-fallback, tagging, cover art and Spotify login work 
 Examples
   python sevby_cli.py songs.txt -o ~/storage/music
   python sevby_cli.py "https://open.spotify.com/playlist/XXXX" --client-id YOUR_ID -o ~/storage/music
+  python sevby_cli.py "https://music.apple.com/us/playlist/NAME/pl.XXXX" -o ~/storage/music   (shared Apple Music playlist)
   python sevby_cli.py list1.txt list2.txt "https://open.spotify.com/playlist/XXXX" -o ~/music
       (several inputs = a queue: one after another, each in its own sub-folder)
   python sevby_cli.py --retry -o ~/music          (retry the songs that failed last time)
@@ -133,6 +134,14 @@ def get_songs(item: str, args) -> tuple[list[str], str] | None:
             say(f"Spotify error: {e}")
             return None
         return songs, sa.sanitize_filename(name).strip(". ") or "Spotify playlist"
+    if "music.apple.com" in item:
+        try:
+            name, songs = sa.fetch_apple_playlist(item)
+        except ValueError as e:
+            say(str(e))
+            return None
+        say(f"Found {len(songs)} songs on Apple Music: {name}")
+        return songs, sa.sanitize_filename(name).strip(". ") or "Apple Music playlist"
     p = Path(item).expanduser()
     if not p.is_file():
         say(f"Not a Spotify link or a file I can find: {item}")

@@ -39,7 +39,7 @@ The first two only know music its artists chose to release freely, so most mains
 
 ## Features
 
-- Paste a list / `.txt` file of `Artist - Title` lines, **or** a Spotify playlist link (needs a Spotify Client ID, which currently requires Spotify Premium to create; see below)
+- Paste a list / `.txt` file of `Artist - Title` lines, **or** a shared **Apple Music playlist link** (no sign-in), **or** a Spotify playlist link (needs a Spotify Client ID, which currently requires Spotify Premium to create; see below)
 - Bandcamp first, YouTube for the rest (or choose *Bandcamp only* / *YouTube only*)
 - Checks **Jamendo and the Internet Archive** first for free, Creative Commons lossless copies
 - Choose **Best available (M4A)** or **Standard (MP3)** for YouTube audio
@@ -74,7 +74,7 @@ SEVBY HQ needs a list of songs. The simplest is a text file with one `Artist - T
 | Where your music lives | How to get a list |
 |---|---|
 | **Spotify** | Export with [Chosic](https://www.chosic.com/spotify-playlist-exporter/) (works with any account), or paste the playlist link if you have your own Spotify Client ID (see below) |
-| **Apple Music** (iPhone or Mac) | On a Mac (or the Apple Music / iTunes app on Windows), select a playlist and choose **File > Library > Export Playlist**, then save as **Text**. On an iPhone, use a converter such as [TuneMyMusic](https://www.tunemymusic.com/) to export your playlist to a CSV or TXT file. These converters need you to sign in to your Apple Music account, and I have not tested them |
+| **Apple Music** (iPhone, Mac or Windows) | In Apple Music open the playlist, tap **Share > Copy Link**, then in SEVBY HQ press **Apple Music link** and paste it. No sign-in needed. It only works for playlists anyone can open (not private ones), and it reads Apple's public web page, so it could stop working if Apple changes that page (I have not been able to test it against Apple's live site). Alternatives: on a Mac or in the Apple Music / iTunes app on Windows choose **File > Library > Export Playlist** and save as **Text**, or use a converter such as [TuneMyMusic](https://www.tunemymusic.com/) (needs you to sign in to Apple Music) |
 | **YouTube Music, Tidal, Qobuz, Deezer** and others | A converter like TuneMyMusic or [Soundiiz](https://soundiiz.com/) can export a playlist to a file. Check that the one you use supports your service |
 | **A folder of music files, foobar2000, MusicBee, Plex** | Export a playlist as **M3U** from your player, or type the songs in |
 | **A wish list** (Bandcamp, Discogs, Last.fm, notes app) | Copy the names into a text file, one `Artist - Title` per line |

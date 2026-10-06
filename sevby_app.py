@@ -365,7 +365,7 @@ def _bandcamp_request(q: str) -> tuple[list, str | None]:
 
 
 def _norm_text(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower().replace("&", " and "))
 
 
 def _bc_subdomains(artist: str) -> list[str]:
@@ -807,6 +807,107 @@ def load_songs_from_file(path: str) -> list[str]:
     else:
         raw = data.decode("utf-8-sig", errors="replace")
     return parse_song_lines(raw)
+
+
+# -- Apple Music: read a PUBLIC shared playlist / album link (no sign-in) ----------------------------
+
+def _apple_artist(obj) -> str:
+    if isinstance(obj, dict):
+        return str(obj.get("name") or "").strip()
+    if isinstance(obj, list):
+        return ", ".join(x for x in (_apple_artist(o) for o in obj) if x)
+    return str(obj or "").strip()
+
+
+def _apple_from_jsonld(html: str) -> tuple[str, list[str]]:
+    """Songs from the page's built-in schema.org data (MusicPlaylist / MusicAlbum)."""
+    name, songs = "", []
+    for m in re.finditer(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html, re.S | re.I):
+        try:
+            data = json.loads(m.group(1))
+        except ValueError:
+            continue
+        for node in (data if isinstance(data, list) else [data]):
+            if not isinstance(node, dict):
+                continue
+            tracks = node.get("track") or node.get("tracks")
+            if not isinstance(tracks, list) or not tracks:
+                continue
+            owner = _apple_artist(node.get("byArtist"))
+            found = []
+            for t in tracks:
+                if not isinstance(t, dict):
+                    continue
+                title = str(t.get("name") or "").strip()
+                artist = _apple_artist(t.get("byArtist")) or owner
+                if title and artist:
+                    found.append(f"{artist} - {title}")
+            if len(found) > len(songs):
+                songs, name = found, str(node.get("name") or "").strip()
+    return name, songs
+
+
+def _apple_from_server_data(html: str) -> list[str]:
+    """Fallback: pull (title, artist) pairs out of the page's embedded app data."""
+    m = re.search(r'<script[^>]*id="serialized-server-data"[^>]*>(.*?)</script>', html, re.S | re.I)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(1))
+    except ValueError:
+        return []
+    out: list[str] = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            title, artist = o.get("title"), o.get("artistName")
+            if isinstance(title, str) and isinstance(artist, str) and title and artist and "contentDescriptor" in o:
+                kind = ((o.get("contentDescriptor") or {}).get("kind") or "")
+                if kind in ("song", ""):
+                    line = f"{artist} - {title}"
+                    if line not in out:
+                        out.append(line)
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+
+    walk(data)
+    return out
+
+
+def fetch_apple_playlist(url: str) -> tuple[str, list[str]]:
+    """(name, ['Artist - Title', ...]) for a shared Apple Music playlist or album link.
+    Only works for links anyone can open (Share > Copy Link). Raises ValueError with a plain message."""
+    url = (url or "").strip().split()[0] if (url or "").strip() else ""
+    if "music.apple.com" not in url.lower():
+        raise ValueError("That doesn't look like an Apple Music link (it should contain music.apple.com).")
+    url = re.sub(r"//embed\.music\.apple\.com", "//music.apple.com", url, flags=re.I)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"Apple Music said no (HTTP {e.code}). Is the playlist public (Share > Copy Link)?")
+    except Exception as e:
+        raise ValueError(f"Couldn't reach Apple Music ({e}). Check your internet connection.")
+    name, songs = _apple_from_jsonld(html)
+    if not songs:
+        songs = _apple_from_server_data(html)
+    if not name:
+        mt = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', html, re.I)
+        if mt:
+            import html as _h
+
+            name = re.split(r"\s+(?:on|by)\s+Apple Music", _h.unescape(mt.group(1)))[0].strip(" \u200e\u200f-")
+    if not songs:
+        raise ValueError("I couldn't find any songs on that page. The playlist may be private, or Apple changed "
+                         "its page. Try another export method (see the README).")
+    return name, songs
 
 
 # \u2500\u2500 Downloading (Bandcamp + YouTube, both via yt-dlp) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -1424,7 +1525,7 @@ _UNWANTED = (
 
 
 def _words(s: str) -> list[str]:
-    return re.findall(r"\w+", (s or "").lower())
+    return re.findall(r"\w+", (s or "").lower().replace("&", " and "))
 
 
 def score_youtube_result(entry: dict, query: str, meta: dict, index: int = 0) -> float:
@@ -1839,7 +1940,7 @@ def process_song(song: str, out_dir: str, opts: dict, state: dict, say, step=lam
 
     step("Checking the folder\u2026")
     if existing_song(out_dir, safe):
-        return {"status": "skip", "source": None, "note": "already in folder"}
+        return {"status": "skip", "source": None, "note": "already downloaded"}
 
     # 1. free, legal lossless sources
     if opts.get("free"):
@@ -1912,7 +2013,7 @@ _FREE_UA = "SEVBY-HQ/" + VERSION + " (https://github.com/Obamna1234/sevby-hq)"
 
 def _norm(t: str) -> str:
     """Lower-case a title and drop brackets, 'feat.' parts and punctuation, for comparing."""
-    t = (t or "").lower()
+    t = (t or "").lower().replace("&", " and ")
     t = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", t)
     t = re.sub(r"\b(feat|ft|featuring)\b.*$", " ", t)
     return " ".join(re.findall(r"\w+", t))
@@ -2257,7 +2358,8 @@ def diagnostics_text() -> str:
         f"ffmpeg: {ffmpeg_path()}",
     ]
     try:
-        out = subprocess.run([ffmpeg_path(), "-version"], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run([ffmpeg_path(), "-version"], capture_output=True, text=True, timeout=10,
+                             creationflags=0x08000000 if os.name == "nt" else 0).stdout
         lines.append("  " + (out.splitlines()[0] if out else "no output"))
     except Exception as e:
         lines.append(f"  ffmpeg failed to run: {e}")
@@ -2303,8 +2405,8 @@ class SevbyApp(_SevbyBase):
         self.title(f"{APP_NAME} v{VERSION}: Playlist to MP3")
         self._apply_icon(self)
         self.configure(fg_color=C_BG)
-        self.minsize(640, 700)
-        self._center_window(720, 900)
+        self.minsize(720, 700)
+        self._center_window(760, 900)
 
         cfg = load_config()
         self.run_mode: str | None = None  # which mode the running job belongs to
@@ -2367,18 +2469,24 @@ class SevbyApp(_SevbyBase):
         self.hint.bind("<Button-1>", lambda _e: self.songs_box.focus_set())
         btn_row = ctk.CTkFrame(self.txt_frame, fg_color="transparent")
         btn_row.pack(fill="x", padx=12, pady=(0, 6))
-        self.load_btn = ctk.CTkButton(btn_row, text="Load .txt", width=90, height=30, fg_color=C_BG,
-                                      hover_color="#2a2a30", text_color=C_TEXT, command=self.load_txt)
-        self.load_btn.pack(side="left")
-        self.clear_songs_btn = ctk.CTkButton(btn_row, text="Clear", width=70, height=30, fg_color=C_BG,
-                                             hover_color="#2a2a30", text_color=C_TEXT,
-                                             command=self.clear_songs)
-        self.clear_songs_btn.pack(side="left", padx=(8, 0))
-        self.chosic_btn = ctk.CTkButton(btn_row, text="Open Chosic (export playlist to .txt)", width=250, height=30, fg_color=C_BG,
-                                        hover_color="#2a2a30", text_color=C_TEXT, command=self.open_chosic)
-        self.chosic_btn.pack(side="left", padx=(8, 0))
-        self.count_label = ctk.CTkLabel(btn_row, text="0 songs", text_color=C_MUTED)
-        self.count_label.pack(side="right")
+        for _c, _w in enumerate((4, 12, 11, 0)):
+            btn_row.grid_columnconfigure(_c, weight=_w, uniform="sb" if _w else "")
+        _kw = dict(height=32, fg_color=C_BG, hover_color="#2a2a30", text_color=C_TEXT, border_width=1,
+                   border_color="#33333a", width=10)
+        self.load_btn = ctk.CTkButton(btn_row, text="Load .txt", command=self.load_txt, **_kw)
+        self.load_btn.grid(row=0, column=0, sticky="ew")
+        self.chosic_btn = ctk.CTkButton(btn_row, text="Open Chosic (export playlist to .txt)",
+                                        command=self.open_chosic, **_kw)
+        self.chosic_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.apple_btn = ctk.CTkButton(btn_row, text="Apple Music (paste playlist link)",
+                                       command=self.open_apple_dialog, **_kw)
+        self.apple_btn.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        self.clear_songs_btn = ctk.CTkButton(btn_row, text="Clear list", width=84, height=32,
+                                             fg_color="transparent", border_width=1, border_color=C_ERR,
+                                             text_color=C_ERR, hover_color="#2a2a30", command=self.clear_songs)
+        self.clear_songs_btn.grid(row=0, column=3, sticky="e", padx=(14, 0))
+        self.count_label = ctk.CTkLabel(self.txt_frame, text="0 songs", text_color=C_MUTED, anchor="w")
+        self.count_label.pack(fill="x", padx=14, pady=(0, 6))
         self.add_btn = ctk.CTkButton(self.txt_frame, text="Add to queue", height=34, fg_color="transparent",
                                      border_width=1, border_color=C_ACCENT, text_color=C_ACCENT,
                                      hover_color="#2a2a30", command=self.add_to_queue)
@@ -2444,8 +2552,9 @@ class SevbyApp(_SevbyBase):
                                         hover_color=C_ACCENT_H, text_color=C_ON_ACCENT,
                                         command=self.browse_folder)
         self.browse_btn.pack(side="right")
-        ctk.CTkLabel(page, text="Tip: a list from the queue is saved in its own sub-folder here.",
-                     anchor="w", text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(fill="x", padx=24)
+        ctk.CTkLabel(page, text="Queued lists each get their own sub-folder here.",
+                     anchor="w", text_color=C_MUTED, font=ctk.CTkFont(size=11), wraplength=650,
+                     justify="left").pack(fill="x", padx=24)
         if cfg.get("last_folder") and os.path.isdir(cfg["last_folder"]):
             self.folder_entry.insert(0, cfg["last_folder"])
 
@@ -2579,7 +2688,7 @@ class SevbyApp(_SevbyBase):
         try:
             text = self.songs_box.get("1.0", "end")
             n = len(parse_song_lines(text))
-            self.count_label.configure(text=f"{n} song" + ("" if n == 1 else "s"))
+            self.count_label.configure(text=f"{n} song" + ("" if n == 1 else "s") + "")
             if text.strip():
                 self.hint.place_forget()
             else:
@@ -2591,6 +2700,9 @@ class SevbyApp(_SevbyBase):
     def clear_songs(self):
         self.songs_box.delete("1.0", "end")
         self._loaded_name = ""
+        if getattr(self, "_resume_jobs", None):
+            self._resume_jobs = None
+            self._refresh_queue_ui()
 
     def _switch_mode(self):
         # Always insert the input panel just above "Save folder" so the layout never shuffles.
@@ -2635,7 +2747,7 @@ class SevbyApp(_SevbyBase):
         st = "normal" if enabled else "disabled"
         for w in (self.songs_box, self.folder_entry):
             w.configure(state=st)
-        for w in (self.load_btn, self.clear_songs_btn, self.add_btn, self.browse_btn, self.chosic_btn,
+        for w in (self.load_btn, self.clear_songs_btn, self.add_btn, self.browse_btn, self.chosic_btn, self.apple_btn,
                   self.free_chk, *self.source_radios, *self.quality_radios, *self.mode_radios):
             w.configure(state=st)
         self.jamendo_id.configure(state=st)
@@ -2961,8 +3073,8 @@ class SevbyApp(_SevbyBase):
 
     def sv_result(self, i: int, n: int, song: str, res: dict):
         status = res.get("status")
-        mark, tag, ntag = {"ok": ("\u2713", "ok", "note"), "skip": ("\u21b7", "skip", "note"),
-                           "dup": ("\u21b7", "skip", "note"), "fail": ("\u2717", "fail", "noterr")}[status]
+        mark, tag, ntag = {"ok": ("\u2713", "ok", "note"), "skip": ("\u2713", "skip", "note"),
+                           "dup": ("\u2713", "skip", "note"), "fail": ("\u2717", "fail", "noterr")}[status]
 
         def f(t):
             if self._cur_start:
@@ -3000,6 +3112,89 @@ class SevbyApp(_SevbyBase):
             "2) Download / copy the song list as text\n"
             "3) Switch to \u201cSong list / .txt file\u201d in SEVBY and paste or load it"
         )
+
+    def open_apple_dialog(self):
+        """Paste a shared Apple Music playlist link; the songs are read from the public page (no sign-in)."""
+        old = getattr(self, "_apple_dlg", None)
+        try:
+            if old is not None and old.winfo_exists():
+                old.deiconify()
+                old.lift()
+                old.focus_force()
+                return
+        except Exception:
+            pass
+        dlg = ctk.CTkToplevel(self)
+        self._apple_dlg = dlg
+        dlg.title("Apple Music playlist link")
+        self._apply_icon(dlg)
+        dlg.configure(fg_color=C_BG)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        w, h = 520, 330
+        self.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
+        y = self.winfo_rooty() + 80
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+        box = ctk.CTkFrame(dlg, fg_color=C_SURFACE, corner_radius=10)
+        box.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(box, text="Apple Music playlist link", font=ctk.CTkFont(size=15, weight="bold"),
+                     anchor="w").pack(fill="x", padx=14, pady=(12, 2))
+        ctk.CTkLabel(box, justify="left", anchor="w", wraplength=470, text_color=C_MUTED,
+                     font=ctk.CTkFont(size=12),
+                     text="In Apple Music open the playlist, tap Share, then Copy Link, and paste it here. "
+                          "No sign-in needed. It only works for playlists anyone can open (not private ones). "
+                          "If it doesn't work, use File > Library > Export Playlist on a Mac, or a converter "
+                          "such as TuneMyMusic (see the README).").pack(fill="x", padx=14, pady=(0, 8))
+        entry = ctk.CTkEntry(box, placeholder_text="https://music.apple.com/.../playlist/...")
+        entry.pack(fill="x", padx=14, pady=4)
+        try:
+            clip = self.clipboard_get().strip()
+            if "music.apple.com" in clip:
+                entry.insert(0, clip)
+        except Exception:
+            pass
+        status = ctk.CTkLabel(box, text="", anchor="w", justify="left", wraplength=470, text_color=C_MUTED)
+        status.pack(fill="x", padx=14, pady=(4, 0))
+        go = ctk.CTkButton(box, text="Get songs", height=38, fg_color=C_ACCENT, hover_color=C_ACCENT_H,
+                           text_color=C_ON_ACCENT)
+        go.pack(fill="x", padx=14, pady=(8, 12))
+
+        def done(name, songs, err):
+            if err:
+                status.configure(text=err, text_color=C_ERR)
+                go.configure(state="normal", text="Get songs")
+                return
+            self.songs_box.configure(state="normal")
+            self.songs_box.delete("1.0", "end")
+            self.songs_box.insert("1.0", "\n".join(songs))
+            self._loaded_name = name or "Apple Music playlist"
+            self.mode.set("txt")
+            self._switch_mode()
+            self.log(f"Loaded {len(songs)} songs from Apple Music: {name}")
+            dlg.destroy()
+
+        def work(url):
+            try:
+                name, songs = fetch_apple_playlist(url)
+                err = None
+            except ValueError as e:
+                name, songs, err = "", [], str(e)
+            except Exception as e:
+                name, songs, err = "", [], f"Something went wrong: {e}"
+            self.after(0, lambda: done(name, songs, err))
+
+        def click():
+            url = entry.get().strip()
+            if not url:
+                status.configure(text="Paste the link first.", text_color=C_ERR)
+                return
+            go.configure(state="disabled", text="Getting songs\u2026")
+            status.configure(text="", text_color=C_MUTED)
+            threading.Thread(target=work, args=(url,), daemon=True).start()
+        go.configure(command=click)
+        entry.bind("<Return>", lambda _e: click())
+        dlg.after(200, entry.focus_set)
 
     def _apply_icon(self, win):
         """Replace CustomTkinter's default blue icon with ours (window + taskbar)."""
@@ -3290,6 +3485,14 @@ class SevbyApp(_SevbyBase):
         if self.running:
             self.stop()
             return
+        rj = getattr(self, "_resume_jobs", None)
+        if rj and not self.queue:
+            same = all(j["mode"] != "txt" or j.get("raw", "").strip() == self.songs_box.get("1.0", "end").strip()
+                       for j in rj) if self.mode.get() == "txt" else True
+            if same and all(os.path.isdir(j["out_dir"]) for j in rj):
+                self._begin([dict(j) for j in rj])  # finished songs are skipped, so this carries on
+                return
+        self._resume_jobs = None
         # songs still in the box while a queue is waiting: they go to the end of the queue first
         if self.queue and self.mode.get() == "txt" and parse_song_lines(self.songs_box.get("1.0", "end")):
             self.add_to_queue()
@@ -3330,6 +3533,8 @@ class SevbyApp(_SevbyBase):
         except OSError:
             pass
         self._job = jobs[0] if len(jobs) == 1 else None
+        self._resume_jobs = None
+        self._last_jobs = list(jobs)
         self.run_mode = jobs[0]["mode"]
         self.running = True
         self._list_n = len(jobs)
@@ -3424,9 +3629,17 @@ class SevbyApp(_SevbyBase):
             self.queue_title.configure(text=f"Queue ({n})")
             for i, j in enumerate(self.queue, 1):
                 row = ctk.CTkFrame(self.queue_rows, fg_color="transparent")
-                row.pack(fill="x")
-                cnt = f" \u00b7 {j['count']} songs" if j.get("count") else ""
-                ctk.CTkLabel(row, text=f"{i}. {j.get('name', 'List')}{cnt}", anchor="w").pack(side="left")
+                row.pack(fill="x", pady=(0, 4))
+                cnt = f" \u00b7 {j['count']} song" + ("" if j["count"] == 1 else "s") if j.get("count") else ""
+                left = ctk.CTkFrame(row, fg_color="transparent")
+                left.pack(side="left", fill="x", expand=True)
+                ctk.CTkLabel(left, text=f"{i}. {j.get('name', 'List')}{cnt}", anchor="w").pack(fill="x")
+                sub = j.get("subfolder")
+                dest = os.path.join(j.get("out_dir", ""), sub) if isinstance(sub, str) and sub else j.get("out_dir", "")
+                if sub is True:
+                    dest = os.path.join(j.get("out_dir", ""), "(playlist name)")
+                ctk.CTkLabel(left, text="Saves to: " + dest.replace("\\", "/"), anchor="w", text_color=C_MUTED,
+                             font=ctk.CTkFont(size=11), wraplength=560, justify="left").pack(fill="x")
                 if not j.get("_running"):
                     ctk.CTkButton(row, text="\u2715", width=26, height=22, fg_color="transparent",
                                   hover_color="#2a2a30", text_color=C_MUTED,
@@ -3437,7 +3650,8 @@ class SevbyApp(_SevbyBase):
             self.queue_card.pack_forget()
         self.clear_btn.configure(state="disabled" if self.running else "normal")
         if not self.running:
-            self.start_btn.configure(text=f"Start Download ({n} list{'' if n == 1 else 's'})" if n else "Start Download")
+            self.start_btn.configure(text=f"Start Download ({n} list{'' if n == 1 else 's'})" if n else
+                                     ("Resume" if getattr(self, "_resume_jobs", None) else "Start Download"))
 
     # -- Retry ---------------------------------------------------------------------------------
     def _show_retry(self):
@@ -3711,6 +3925,9 @@ class SevbyApp(_SevbyBase):
             self._set_status("Stopped")
             self.sv_summary("Stopped \u00b7 " + summary)
             # a stopped run keeps the previous failed list
+            if not self.queue:
+                self._resume_jobs = [{k: v for k, v in j.items() if not k.startswith("_")}
+                                     for j in getattr(self, "_last_jobs", [])]
         else:
             self._set_log_header(f"Log \u00b7 Done \u00b7 {summary}")
             self.prog_step.configure(text="Done")
@@ -3723,6 +3940,9 @@ class SevbyApp(_SevbyBase):
         self.pause_btn.configure(state="disabled", text="Pause")
         self._set_inputs(True)
         self._refresh_queue_ui()
+        if stopped:
+            self.start_btn.configure(text="Resume" if not self.queue else
+                                     f"Resume ({len(self.queue)} list{'' if len(self.queue) == 1 else 's'})")
         self.list_heading.pack_forget()
         if not stopped and (c["ok"] or c["skip"] or c["fail"]):
             body = "Finished.\n" + summary.replace(" \u00b7 ", "\n")
