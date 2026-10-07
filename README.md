@@ -5,28 +5,28 @@
 *Screenshots show **SEVBY HQ** (gold theme) on Windows. Linux and macOS look similar. The green version is the [original SEVBY](https://github.com/Obamna1234/sevby).*
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/0c5adef1-3273-4e81-bf41-e5fd8d618a16" alt="SEVBY HQ: main window" width="600">
-<br><em>SEVBY HQ: main window</em>
+<img src="https://github.com/user-attachments/assets/0c5adef1-3273-4e81-bf41-e5fd8d618a16" alt="image" width="600">
+<br><em>SEVBY HQ v0.10.0-beta downloading from an imported .txt file playlist</em>
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/cf6b70f9-0a9f-4616-8dde-94aee6dc89d4" alt="SEVBY HQ: song log and downloads" width="600">
-<br><em>SEVBY HQ: song log and downloads</em>
+<img src="https://github.com/user-attachments/assets/cf6b70f9-0a9f-4616-8dde-94aee6dc89d4" alt="image" width="600">
+<br><em>SEVBY HQ v0.10.0-beta UI for pasting a Spotify URL playlist</em>
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/11bdcd84-164c-4ca7-a103-b5ed7a2fb3c4" alt="SEVBY HQ: audio quality and source options" width="600">
-<br><em>SEVBY HQ: audio quality and source options</em>
+<img src="https://github.com/user-attachments/assets/11bdcd84-164c-4ca7-a103-b5ed7a2fb3c4" alt="image" width="600">
+<br><em>SEVBY HQ v0.10.0-beta exporting a Apple Music playlist URL to .txt &amp; automatically pasting into the text box</em>
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/0d7652ca-9297-4d80-83ff-af221767b09e" alt="SEVBY HQ: queue and folders" width="600">
-<br><em>SEVBY HQ: queue and folders</em>
+<img src="https://github.com/user-attachments/assets/0d7652ca-9297-4d80-83ff-af221767b09e" alt="image" width="600">
+<br><em>SEVBY HQ v0.10.0-beta About &amp; Updates window</em>
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/753c3c53-b653-4b6a-80ee-5de6d8763ad3" alt="SEVBY HQ: About & updates" width="600">
-<br><em>SEVBY HQ: About & updates</em>
+<img src="https://github.com/user-attachments/assets/753c3c53-b653-4b6a-80ee-5de6d8763ad3" alt="image" width="600">
+<br><em>SEVBY HQ v0.10.0-beta (fifth screenshot: add your own caption here)</em>
 </p>
 
 A sibling of [SEVBY](https://github.com/Obamna1234/sevby). Same idea, with options for better audio quality.
