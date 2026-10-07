@@ -21,7 +21,7 @@
 
 <p align="center">
 <img src="https://github.com/user-attachments/assets/0d7652ca-9297-4d80-83ff-af221767b09e" alt="image" width="600">
-<br><em>SEVBY HQ v0.10.0-beta exporting a Apple Music playlist URL to .txt & automatically pasting into the text box
+<br><em>SEVBY HQ v0.10.0-beta exporting a Apple Music playlist URL to .txt &amp; automatically pasting into the text box</em>
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@ SEVBY HQ looks for each song on **Bandcamp** first, and falls back to **YouTube*
 
 | | SEVBY | SEVBY HQ |
 |---|---|---|
-| Free lossless sources | - | **Checks Jamendo and the Internet Archive first** for Creative Commons copies in FLAC (or 192 kbps+ MP3) |
+| Free lossless sources | - | **Checks Jamendo and the Internet Archive first** for Creative Commons copies in FLAC (or 192 kbps+ MP3). Only a small share of songs are there, so most will still come from Bandcamp / YouTube |
 | YouTube songs | Converted to MP3 | **Original audio kept as M4A**, no extra re-encoding (falls back to MP3 if no M4A exists) |
 | Bandcamp songs | 128 kbps MP3 (Bandcamp's stream) | Same |
 | Honest log | `OK` | Each song says what you actually got, e.g. `[YouTube original audio (M4A/AAC ~129 kbps)]` |
@@ -59,6 +59,8 @@ The first two only know music its artists chose to release freely, so most mains
 
 ## Be realistic about quality
 
+- **FLAC is the exception, not the rule.** SEVBY HQ only gets FLAC when a song is on **Jamendo** or the **Internet Archive** under a Creative Commons licence *and* that copy is lossless. That is a small slice of music, mostly independent artists. For most songs (anything commercial or mainstream) expect Bandcamp's 128 kbps stream or YouTube's M4A instead. In a typical playlist, few or none of the songs will come as FLAC.
+- Jamendo needs your own free Client ID (see below), and some artists switch downloads off. SEVBY HQ asks Jamendo for FLAC first and falls back to a high-bitrate MP3 if FLAC isn't offered. I have not been able to test every case, and Jamendo may require a logged-in account to serve FLAC files, in which case you would get the MP3 instead. The log always says which one you got.
 - Free lossless files exist only for music released under Creative Commons. Everything else is limited by what Bandcamp's free stream and YouTube offer:
 - Bandcamp's free stream and YouTube audio are only about **128-160 kbps**. SEVBY HQ keeps them as they are rather than re-encoding, which avoids losing a little more quality. It **cannot make them better** than they started.
 - Real high quality (FLAC or 320 kbps) means buying the music. After each run, HQ writes `SEVBY HQ - find better quality.txt` into your music folder with search links (Bandcamp, Qobuz, 7digital) for the songs that came from YouTube. Buying from the artist on Bandcamp is the best way to support them.
