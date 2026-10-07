@@ -2,6 +2,33 @@
 
 # SEVBY HQ: Playlist to M4A / MP3
 
+*Screenshots show **SEVBY HQ** (gold theme) on Windows. Linux and macOS look similar. The green version is the [original SEVBY](https://github.com/Obamna1234/sevby).*
+
+<p align="center">
+<img src="https://github.com/user-attachments/assets/0c5adef1-3273-4e81-bf41-e5fd8d618a16" alt="SEVBY HQ: main window" width="600">
+<br><em>SEVBY HQ: main window</em>
+</p>
+
+<p align="center">
+<img src="https://github.com/user-attachments/assets/cf6b70f9-0a9f-4616-8dde-94aee6dc89d4" alt="SEVBY HQ: song log and downloads" width="600">
+<br><em>SEVBY HQ: song log and downloads</em>
+</p>
+
+<p align="center">
+<img src="https://github.com/user-attachments/assets/11bdcd84-164c-4ca7-a103-b5ed7a2fb3c4" alt="SEVBY HQ: audio quality and source options" width="600">
+<br><em>SEVBY HQ: audio quality and source options</em>
+</p>
+
+<p align="center">
+<img src="https://github.com/user-attachments/assets/0d7652ca-9297-4d80-83ff-af221767b09e" alt="SEVBY HQ: queue and folders" width="600">
+<br><em>SEVBY HQ: queue and folders</em>
+</p>
+
+<p align="center">
+<img src="https://github.com/user-attachments/assets/753c3c53-b653-4b6a-80ee-5de6d8763ad3" alt="SEVBY HQ: About & updates" width="600">
+<br><em>SEVBY HQ: About & updates</em>
+</p>
+
 A sibling of [SEVBY](https://github.com/Obamna1234/sevby). Same idea, with options for better audio quality.
 
 Turn a plain text list of songs (or a Spotify playlist) into tagged audio files on your own computer.
@@ -45,7 +72,7 @@ The first two only know music its artists chose to release freely, so most mains
 - Choose **Best available (M4A)** or **Standard (MP3)** for YouTube audio
 - Title, artist, album, year, track number and square cover art
 - YouTube matching picks the version with the right length and avoids live / remix / sped-up uploads
-- Pause, Stop, *Retry failed (N)* (re-runs only the failed songs, into the right folders), *Open folder*
+- Pause, Resume, Stop, *Retry failed (N)* (re-runs only the failed songs, into the right folders), *Open folder*
 - A **queue** of several lists, each saved into its own sub-folder; the queue is remembered if you close the app
 - A tidy, collapsible **song log** (one entry per song with where it came from), plus a *Details* view and *Copy log* for bug reports
 - Songs already in the folder are skipped (even after an interrupted run); a song listed twice is only downloaded once
@@ -65,7 +92,7 @@ python sevby_app.py
 
 From source you also need **ffmpeg** (put `ffmpeg.exe` / `ffmpeg` next to `sevby_app.py`, or install it so it's on your PATH).
 
-**Android:** a command-line version for Termux (no window) is described in [TERMUX.md](TERMUX.md). A proper Android app is planned.
+**Android:** a command-line version for Termux (no window) is described in [TERMUX.md](TERMUX.md). An Android app is also available on the [SEVBY releases page](https://github.com/Obamna1234/sevby/releases) (this HQ edition itself is desktop and Termux only).
 
 ## Where does my song list come from?
 
@@ -74,7 +101,7 @@ SEVBY HQ needs a list of songs. The simplest is a text file with one `Artist - T
 | Where your music lives | How to get a list |
 |---|---|
 | **Spotify** | Export with [Chosic](https://www.chosic.com/spotify-playlist-exporter/) (works with any account), or paste the playlist link if you have your own Spotify Client ID (see below) |
-| **Apple Music** (iPhone, Mac or Windows) | In Apple Music open the playlist, tap **Share > Copy Link**, then in SEVBY HQ press **Apple Music link** and paste it. No sign-in needed. It only works for playlists anyone can open (not private ones), and it reads Apple's public web page, so it could stop working if Apple changes that page (I have not been able to test it against Apple's live site). Alternatives: on a Mac or in the Apple Music / iTunes app on Windows choose **File > Library > Export Playlist** and save as **Text**, or use a converter such as [TuneMyMusic](https://www.tunemymusic.com/) (needs you to sign in to Apple Music) |
+| **Apple Music** (iPhone, Mac or Windows) | In Apple Music open the playlist, tap **Share > Copy Link**, then in SEVBY HQ press **Apple Music** and paste the link. No sign-in needed. It only works for playlists anyone can open (not private ones), and it reads Apple's public web page, so it could stop working if Apple changes that page (I have not been able to test it against Apple's live site). Alternatives: on a Mac or in the Apple Music / iTunes app on Windows choose **File > Library > Export Playlist** and save as **Text**, or use a converter such as [TuneMyMusic](https://www.tunemymusic.com/) (needs you to sign in to Apple Music) |
 | **YouTube Music, Tidal, Qobuz, Deezer** and others | A converter like TuneMyMusic or [Soundiiz](https://soundiiz.com/) can export a playlist to a file. Check that the one you use supports your service |
 | **A folder of music files, foobar2000, MusicBee, Plex** | Export a playlist as **M3U** from your player, or type the songs in |
 | **A wish list** (Bandcamp, Discogs, Last.fm, notes app) | Copy the names into a text file, one `Artist - Title` per line |
