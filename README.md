@@ -5,31 +5,36 @@
 *Screenshots show **SEVBY HQ** (gold theme) on Windows. Linux and macOS look similar. The green version is the [original SEVBY](https://github.com/Obamna1234/sevby).*
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/0c5adef1-3273-4e81-bf41-e5fd8d618a16" alt="image" width="600">
+<img width="754" height="928" alt="image" src="https://github.com/user-attachments/assets/af7d0cfd-2b37-4e0c-8470-493c81cdbc8f" />
+<br><em>SEVBY HQ v0.10.0-beta importing a .txt file playlist
+</p>
+
+<p align="center">
+<img width="757" height="929" alt="image" src="https://github.com/user-attachments/assets/e33f1ecd-2af9-40b2-bf48-d1cdd8a5fe11" />
 <br><em>SEVBY HQ v0.10.0-beta downloading from an imported .txt file playlist</em>
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/753c3c53-b653-4b6a-80ee-5de6d8763ad3" alt="image" width="600">
-<br><em>SEVBY HQ v0.10.0-beta UI for pasting a Spotify URL playlist</em>
+<img width="758" height="929" alt="image" src="https://github.com/user-attachments/assets/9c9a522d-7340-40b2-860f-e91c613d6a5e" />
+<br><em>SEVBY HQ v0.10.0-beta UI for pasting a Spotify URL playlist and the Client ID "What is this" pop up window
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/11bdcd84-164c-4ca7-a103-b5ed7a2fb3c4" alt="image" width="600">
-<br><em>SEVBY HQ v0.10.0-beta downloading from .txt and UI for log</em>
+<img width="754" height="925" alt="image" src="https://github.com/user-attachments/assets/31177dcb-9b75-4157-9be8-17b02090295e" />
+<br><em>SEVBY HQ v0.10.0-beta downloading from an imported .txt and a more detailed log</em>
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/0d7652ca-9297-4d80-83ff-af221767b09e" alt="image" width="600">
+<img width="756" height="928" alt="image" src="https://github.com/user-attachments/assets/b42550a6-4714-449f-b789-bb31766a864a" />
 <br><em>SEVBY HQ v0.10.0-beta exporting a Apple Music playlist URL to .txt &amp; automatically pasting into the text box</em>
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/cf6b70f9-0a9f-4616-8dde-94aee6dc89d4" alt="image" width="600">
+<img width="756" height="927" alt="image" src="https://github.com/user-attachments/assets/d7fb460a-e4c0-46b1-a079-10d78d691373" />
 <br><em>SEVBY HQ v0.10.0-beta About &amp; Updates window</em>
 </p>
 
-The golden child of [SEVBY](https://github.com/Obamna1234/sevby). Same idea, with options for better audio quality.
+The golden child of [SEVBY](https://github.com/Obamna1234/sevby). Same idea, with options for better audio quality if available.
 
 Turn a plain text list of songs (or a Spotify playlist) into tagged audio files on your own computer.
 SEVBY HQ looks for each song on **Bandcamp** first, and falls back to **YouTube** for anything it can't find.
