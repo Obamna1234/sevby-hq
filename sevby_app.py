@@ -1641,6 +1641,14 @@ def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True
     # Pick the best-matching video (right length, not a live/remix version) instead of the first hit.
     targets: list[str] = []
     ranked = rank_youtube_results(search_youtube_candidates(query), query, meta)
+    # Drop videos whose title shares (almost) nothing with the wanted song title.
+    _tw = set(_words(meta.get("title") or _split_query(query)[1]))
+    if _tw:
+        ranked = [(sc, e) for sc, e in ranked
+                  if len(_tw & set(_words((e.get("title") or "")))) / len(_tw) >= 0.5]
+    if not ranked:
+        log("  FAIL: no matching video found on YouTube")
+        return False
     for score, entry in ranked[:2]:
         url = entry.get("url") or ""
         if not url.startswith("http"):
@@ -1652,7 +1660,6 @@ def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True
                 + ("" if score >= 20 else "  (best guess)")
             )
         targets.append(url)
-    targets.append(f"ytsearch1:{query}")  # last resort
 
     original = bool(QUALITY["best"]) and yt_dlp is not None
     ok, err = False, "no result"
@@ -1731,6 +1738,11 @@ def _host_label(url: str) -> str:
     return m.group(1).lower() if m else ""
 
 
+_BC_BADVER_RE = re.compile(
+    r"remake|re-?record|tribute|\bcovers?\b|bootleg|karaoke|\bdubs?\b|made famous|originally (performed|by)|"
+    r"in the style of|\bversions?\b|rerecord|lullaby|8-?bit|piano (version|tribute)", re.I)
+
+
 def bc_choose(results: list[dict], query: str) -> dict | None:
     """Pick the right Bandcamp TRACK: same title, same artist, same kind of version."""
     artist, title = _split_query(query)
@@ -1747,9 +1759,19 @@ def bc_choose(results: list[dict], query: str) -> dict | None:
         if not _title_eq(name, title):
             continue
         band = _alnum(r.get("band_name") or "")
-        if not band or not any(a in band or band in a for a in want_artists):
+        # The page must belong to the artist itself (not "Queen Mary band", a tribute or a bootleg page):
+        # the band name must equal the artist, or at least be mostly made of it.
+        cands = want_artists + [_alnum(artist)]
+        if not band or not any(
+                a and (a == band or ((a in band or band in a) and min(len(a), len(band)) / max(len(a), len(band)) >= 0.75))
+                for a in cands):
             continue
         if version_set(name) != want_ver:
+            continue
+        album_txt = r.get("album_name") or ""
+        if _BC_BADVER_RE.search(name + " " + album_txt) and not _BC_BADVER_RE.search(query):
+            continue  # remake / tribute / cover / bootleg / "dubs" release
+        if re.search(r"\blive\b|unplugged|in concert", album_txt, re.I) and "live" not in want_ver:
             continue
         score = -0.001 * i
         host = _host_label(url)
