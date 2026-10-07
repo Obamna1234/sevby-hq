@@ -3005,7 +3005,7 @@ class SevbyApp(_SevbyBase):
         self.apple_btn = IconButton(btn_row, "link", "Apple Music", "paste a link", self.open_apple_dialog, C_ACCENT)
         self.apple_btn.grid(row=0, column=2, sticky="ew", padx=(6, 0))
         Tooltip(self.load_btn, "Import songs from a file: .txt (one 'Artist - Title' per line), .csv (e.g. from "
-                               "TuneMyMusic or Soundiiz), .tsv or .m3u playlists.")
+                               "Chosic, TuneMyMusic or Soundiiz), .tsv or .m3u playlists.")
         Tooltip(self.chosic_btn, "Opens the Chosic website in your browser. Paste a PUBLIC Spotify playlist link "
                                  "there, then copy or download the song list it gives you. Back here, paste it "
                                  "into the box above or click Import (.txt or .csv). No Spotify account or keys "
