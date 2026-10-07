@@ -1611,7 +1611,7 @@ def rank_youtube_results(entries: list[dict], query: str, meta: dict) -> list[tu
     return scored
 
 
-def search_youtube_candidates(query: str) -> list[dict]:
+def search_youtube_candidates(query: str, n: int = 8) -> list[dict]:
     """Top YouTube search results (title, length, channel) without downloading anything."""
     if yt_dlp is None:
         return []
@@ -1622,7 +1622,7 @@ def search_youtube_candidates(query: str) -> list[dict]:
     for attempt in range(2):
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"ytsearch8:{query}", download=False)
+                info = ydl.extract_info(f"ytsearch{n}:{query}", download=False)
             return [e for e in (info or {}).get("entries") or [] if e and (e.get("id") or e.get("url"))]
         except Exception:
             if STOP_EVENT.is_set():
@@ -1655,6 +1655,19 @@ def download_bandcamp_mp3(bc_url: str, query: str, out_dir: str, log) -> bool:
     return ok
 
 
+def _alt_youtube_queries(artist: str, title: str) -> list[str]:
+    """Other ways to word the YouTube search when 'Artist - Title' finds nothing usable."""
+    a, t = (artist or "").strip(), clean_title(title or "") or (title or "").strip()
+    if not t:
+        return []
+    out = []
+    if a:
+        out += [f"{a} {t} official audio", f"{t} {a}", f"{a} - Topic {t}"]
+    else:
+        out += [f"{t} official audio"]
+    return out
+
+
 def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True) -> bool:
     safe = sanitize_filename(query)
     if _already_exists(out_dir, safe):
@@ -1677,6 +1690,23 @@ def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True
     if _tw:
         ranked = [(sc, e) for sc, e in ranked
                   if len(_tw & set(_words((e.get("title") or "")))) / len(_tw) >= 0.5]
+    if not ranked:
+        # Short or common titles ("Duel") can be crowded out of the first results: try other wordings, and
+        # only accept a video whose title or channel also names the artist.
+        _art = meta.get("artist") or _split_query(query)[0]
+        _aw = set(_words(_art))
+        _ti = meta.get("title") or _split_query(query)[1]
+        for q2 in _alt_youtube_queries(_art, _ti):
+            if STOP_EVENT.is_set():
+                break
+            r2 = rank_youtube_results(search_youtube_candidates(q2, 15), query, meta)
+            r2 = [(sc, e) for sc, e in r2
+                  if _tw and len(_tw & set(_words(e.get("title") or ""))) / len(_tw) >= 0.5
+                  and _aw and len(_aw & set(_words((e.get("title") or "") + " " + (e.get("channel") or e.get("uploader") or "")))) / len(_aw) >= 0.5]
+            if r2:
+                log("  (found with a different search wording)")
+                ranked = r2
+                break
     if not ranked:
         log("  FAIL: no matching video found on YouTube")
         return False
@@ -2708,6 +2738,80 @@ def network_test_text() -> str:
     return "\n".join(out)
 
 
+def _draw_icon(kind: str, color: str, size: int = 16):
+    """Small line icon (file / globe / link) drawn with Pillow, returned as a CTkImage."""
+    from PIL import Image, ImageDraw
+    k = 8
+    S = size * k
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    w = max(2, int(S * 0.09))
+    u = S / 24.0
+    if kind == "file":
+        pts = [(5 * u, 3 * u), (14 * u, 3 * u), (19 * u, 8 * u), (19 * u, 21 * u), (5 * u, 21 * u), (5 * u, 3 * u)]
+        d.line(pts, fill=color, width=w, joint="curve")
+        d.line([(14 * u, 3 * u), (14 * u, 8 * u), (19 * u, 8 * u)], fill=color, width=w, joint="curve")
+    elif kind == "globe":
+        d.ellipse([3 * u, 3 * u, 21 * u, 21 * u], outline=color, width=w)
+        d.ellipse([8 * u, 3 * u, 16 * u, 21 * u], outline=color, width=w)
+        d.line([(3 * u, 12 * u), (21 * u, 12 * u)], fill=color, width=w)
+    else:  # link: two rounded links
+        d.rounded_rectangle([2 * u, 8.5 * u, 13 * u, 15.5 * u], radius=3.5 * u, outline=color, width=w)
+        d.rounded_rectangle([11 * u, 8.5 * u, 22 * u, 15.5 * u], radius=3.5 * u, outline=color, width=w)
+    img = img.resize((size * 2, size * 2), Image.LANCZOS)
+    return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+
+
+class IconButton(ctk.CTkFrame):
+    """Outlined button with an icon + name on the first line and a small grey line under it."""
+
+    def __init__(self, master, icon: str, title: str, sub: str, command, accent: str, height: int = 52):
+        super().__init__(master, height=height, width=10, fg_color=C_BG, border_width=1,
+                         border_color="#33333a", corner_radius=6)
+        self.grid_propagate(False)
+        self.pack_propagate(False)
+        self._command, self._enabled = command, True
+        inner = ctk.CTkFrame(self, fg_color="transparent")
+        inner.place(relx=0.5, rely=0.5, anchor="center")
+        self._img = _draw_icon(icon, accent)
+        self._t = ctk.CTkLabel(inner, text=" " + title, image=self._img, compound="left", text_color=C_TEXT,
+                               font=ctk.CTkFont(size=13, weight="bold"))
+        self._t.pack()
+        self._s = ctk.CTkLabel(inner, text=sub, text_color=C_MUTED, font=ctk.CTkFont(size=11))
+        self._s.pack()
+        self._parts = (self, inner, self._t, self._s)
+        self.bind("<Enter>", lambda _e: self._hover(True))
+        self.bind("<Leave>", lambda _e: self._hover(False))
+        self.bind("<ButtonRelease-1>", self._click)
+
+    def bind(self, seq, func, add=None):  # hover tips / clicks reach every part of the button
+        for w in self._parts:
+            if w is self:
+                ctk.CTkFrame.bind(self, seq, func, add="+")
+            else:
+                w.bind(seq, func, add="+")
+
+    def _hover(self, on: bool):
+        if self._enabled:
+            ctk.CTkFrame.configure(self, fg_color="#2a2a30" if on else C_BG)
+
+    def _click(self, e):
+        inside = (self.winfo_rootx() <= e.x_root <= self.winfo_rootx() + self.winfo_width()
+                  and self.winfo_rooty() <= e.y_root <= self.winfo_rooty() + self.winfo_height())
+        if self._enabled and inside and self._command:
+            self._command()
+
+    def configure(self, **kw):
+        if "state" in kw:
+            self._enabled = kw.pop("state") != "disabled"
+            col = C_TEXT if self._enabled else "#5a5a62"
+            self._t.configure(text_color=col)
+            self._s.configure(text_color=C_MUTED if self._enabled else "#4a4a52")
+            ctk.CTkFrame.configure(self, fg_color=C_BG)
+        if kw:
+            super().configure(**kw)
+
+
 class Tooltip:
     """Small hover message for any widget (shows after a short pause, hides when the mouse leaves)."""
 
@@ -2854,17 +2958,13 @@ class SevbyApp(_SevbyBase):
         self.hint.bind("<Button-1>", lambda _e: self.songs_box.focus_set())
         btn_row = ctk.CTkFrame(self.txt_frame, fg_color="transparent")
         btn_row.pack(fill="x", padx=12, pady=(0, 6))
-        for _c, _w in enumerate((4, 12, 11, 0)):
+        for _c, _w in enumerate((10, 11, 11, 0)):
             btn_row.grid_columnconfigure(_c, weight=_w, uniform="sb" if _w else "")
-        _kw = dict(height=32, fg_color=C_BG, hover_color="#2a2a30", text_color=C_TEXT, border_width=1,
-                   border_color="#33333a", width=10)
-        self.load_btn = ctk.CTkButton(btn_row, text="Import .txt", command=self.load_txt, **_kw)
+        self.load_btn = IconButton(btn_row, "file", "Import", ".txt or .csv", self.load_txt, C_ACCENT)
         self.load_btn.grid(row=0, column=0, sticky="ew")
-        self.chosic_btn = ctk.CTkButton(btn_row, text="Open Chosic website (Spotify link)",
-                                        command=self.open_chosic, **_kw)
+        self.chosic_btn = IconButton(btn_row, "globe", "Chosic", "Spotify playlists", self.open_chosic, C_ACCENT)
         self.chosic_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        self.apple_btn = ctk.CTkButton(btn_row, text="Apple Music (paste link)",
-                                       command=self.open_apple_dialog, **_kw)
+        self.apple_btn = IconButton(btn_row, "link", "Apple Music", "paste a link", self.open_apple_dialog, C_ACCENT)
         self.apple_btn.grid(row=0, column=2, sticky="ew", padx=(6, 0))
         Tooltip(self.load_btn, "Import songs from a file: .txt (one 'Artist - Title' per line), .csv (e.g. from "
                                "TuneMyMusic or Soundiiz), .tsv or .m3u playlists.")
@@ -2877,7 +2977,7 @@ class SevbyApp(_SevbyBase):
         self.clear_songs_btn = ctk.CTkButton(btn_row, text="Clear list", width=84, height=32,
                                              fg_color="transparent", border_width=1, border_color=C_ERR,
                                              text_color=C_ERR, hover_color="#2a2a30", command=self.clear_songs)
-        self.clear_songs_btn.grid(row=0, column=3, sticky="e", padx=(14, 0))
+        self.clear_songs_btn.grid(row=0, column=3, sticky="ne", padx=(14, 0))
         self.count_label = ctk.CTkLabel(self.txt_frame, text="0 songs", text_color=C_MUTED, anchor="w")
         self.count_label.pack(fill="x", padx=14, pady=(0, 6))
         self.add_btn = ctk.CTkButton(self.txt_frame, text="Add to queue", height=34, fg_color="transparent",
