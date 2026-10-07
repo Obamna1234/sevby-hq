@@ -2738,28 +2738,22 @@ def network_test_text() -> str:
     return "\n".join(out)
 
 
-def _draw_icon(kind: str, color: str, size: int = 16):
-    """Small line icon (file / globe / link) drawn with Pillow, returned as a CTkImage."""
-    from PIL import Image, ImageDraw
-    k = 8
-    S = size * k
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    w = max(2, int(S * 0.09))
-    u = S / 24.0
-    if kind == "file":
-        pts = [(5 * u, 3 * u), (14 * u, 3 * u), (19 * u, 8 * u), (19 * u, 21 * u), (5 * u, 21 * u), (5 * u, 3 * u)]
-        d.line(pts, fill=color, width=w, joint="curve")
-        d.line([(14 * u, 3 * u), (14 * u, 8 * u), (19 * u, 8 * u)], fill=color, width=w, joint="curve")
-    elif kind == "globe":
-        d.ellipse([3 * u, 3 * u, 21 * u, 21 * u], outline=color, width=w)
-        d.ellipse([8 * u, 3 * u, 16 * u, 21 * u], outline=color, width=w)
-        d.line([(3 * u, 12 * u), (21 * u, 12 * u)], fill=color, width=w)
-    else:  # link: two rounded links
-        d.rounded_rectangle([2 * u, 8.5 * u, 13 * u, 15.5 * u], radius=3.5 * u, outline=color, width=w)
-        d.rounded_rectangle([11 * u, 8.5 * u, 22 * u, 15.5 * u], radius=3.5 * u, outline=color, width=w)
-    img = img.resize((size * 2, size * 2), Image.LANCZOS)
-    return ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+class _Icon(tk.Canvas):
+    """Small line icon (file / globe / link) drawn with plain Tk shapes (no extra libraries needed)."""
+
+    def __init__(self, master, kind: str, color: str, bg: str, size: int = 16):
+        super().__init__(master, width=size, height=size, bg=bg, highlightthickness=0, bd=0)
+        kw = dict(fill=color, width=2, capstyle="round", joinstyle="round")
+        if kind == "file":
+            self.create_line(4, 2, 10, 2, 13, 5, 13, 14, 4, 14, 4, 2, **kw)
+            self.create_line(10, 2, 10, 5, 13, 5, **kw)
+        elif kind == "globe":
+            self.create_oval(2, 2, 14, 14, outline=color, width=2)
+            self.create_oval(5.5, 2, 10.5, 14, outline=color, width=1.5)
+            self.create_line(2, 8, 14, 8, **kw)
+        else:  # link: two overlapping rounded links
+            self.create_oval(0.5, 4.5, 9, 11.5, outline=color, width=2)
+            self.create_oval(7, 4.5, 15.5, 11.5, outline=color, width=2)
 
 
 class IconButton(ctk.CTkFrame):
@@ -2773,13 +2767,15 @@ class IconButton(ctk.CTkFrame):
         self._command, self._enabled = command, True
         inner = ctk.CTkFrame(self, fg_color="transparent")
         inner.place(relx=0.5, rely=0.5, anchor="center")
-        self._img = _draw_icon(icon, accent)
-        self._t = ctk.CTkLabel(inner, text=" " + title, image=self._img, compound="left", text_color=C_TEXT,
-                               font=ctk.CTkFont(size=13, weight="bold"))
-        self._t.pack()
+        top = ctk.CTkFrame(inner, fg_color="transparent")
+        top.pack()
+        self._ic = _Icon(top, icon, accent, C_BG)
+        self._ic.pack(side="left", padx=(0, 6))
+        self._t = ctk.CTkLabel(top, text=title, text_color=C_TEXT, font=ctk.CTkFont(size=13, weight="bold"))
+        self._t.pack(side="left")
         self._s = ctk.CTkLabel(inner, text=sub, text_color=C_MUTED, font=ctk.CTkFont(size=11))
         self._s.pack()
-        self._parts = (self, inner, self._t, self._s)
+        self._parts = (self, inner, top, self._ic, self._t, self._s)
         self.bind("<Enter>", lambda _e: self._hover(True))
         self.bind("<Leave>", lambda _e: self._hover(False))
         self.bind("<ButtonRelease-1>", self._click)
@@ -2793,7 +2789,9 @@ class IconButton(ctk.CTkFrame):
 
     def _hover(self, on: bool):
         if self._enabled:
-            ctk.CTkFrame.configure(self, fg_color="#2a2a30" if on else C_BG)
+            bg = "#2a2a30" if on else C_BG
+            ctk.CTkFrame.configure(self, fg_color=bg)
+            self._ic.configure(bg=bg)
 
     def _click(self, e):
         inside = (self.winfo_rootx() <= e.x_root <= self.winfo_rootx() + self.winfo_width()
@@ -2808,6 +2806,7 @@ class IconButton(ctk.CTkFrame):
             self._t.configure(text_color=col)
             self._s.configure(text_color=C_MUTED if self._enabled else "#4a4a52")
             ctk.CTkFrame.configure(self, fg_color=C_BG)
+            self._ic.configure(bg=C_BG)
         if kw:
             super().configure(**kw)
 
