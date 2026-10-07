@@ -35,7 +35,7 @@ python sevby_cli.py list1.txt list2.txt "https://open.spotify.com/playlist/XXXX"
 ```
 Only Bandcamp or only YouTube: add `--source bandcamp` or `--source youtube`.
 
-Free lossless sources: SEVBY HQ first checks Jamendo and the Internet Archive for Creative Commons copies (FLAC where available). For Jamendo, get a free Client ID at https://devportal.jamendo.com and run once with `--jamendo-id YOUR_ID` (it is remembered). Skip these sources with `--no-free`.
+Free sources (optional, **off by default**): add `--free` and SEVBY HQ will first check Jamendo and the Internet Archive for copies labelled Creative Commons (FLAC where available). **Warning:** anyone can upload music to those sites and choose its licence label, and nobody checks it, so a file labelled Creative Commons may not really be free to download. You are responsible for only keeping music you may download; the log shows a link for each file so you can check. For Jamendo, get a free Client ID at https://devportal.jamendo.com and run once with `--jamendo-id YOUR_ID` (it is remembered).
 
 Audio quality: by default SEVBY HQ keeps YouTube's original audio as **M4A** (no re-encoding). Add `--quality standard` to convert everything to MP3 like the original SEVBY.
 

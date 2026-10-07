@@ -156,15 +156,20 @@ def main() -> int:
     ap.add_argument("--source", choices=["both", "bandcamp", "youtube"], default="both")
     ap.add_argument("--quality", choices=["best", "standard"], default="best",
                     help="best = keep YouTube's original audio as M4A (default); standard = convert to MP3")
-    ap.add_argument("--no-free", action="store_true",
-                    help="do not check Jamendo / Internet Archive first")
+    ap.add_argument("--free", action="store_true",
+                    help="also check Jamendo / Internet Archive first for Creative Commons copies (off by default; "
+                         "their licence labels are set by uploaders and are not verified, see the README)")
+    ap.add_argument("--no-free", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--jamendo-id", default="", help="your free Jamendo Client ID (remembered after first use)")
     ap.add_argument("--client-id", default="", help="your free Spotify Client ID (remembered after first use)")
     ap.add_argument("--client-secret", default="", help="optional, not needed")
     ap.add_argument("--retry", action="store_true", help="retry the songs that failed last time")
     args = ap.parse_args()
     sa.QUALITY["best"] = args.quality == "best"
-    sa.QUALITY["free"] = not args.no_free
+    sa.QUALITY["free"] = bool(args.free) and not args.no_free
+    if sa.QUALITY["free"]:
+        say("Free sources are ON: Jamendo / Internet Archive licence labels are set by uploaders and are not "
+            "verified. You are responsible for only keeping music you may download. The log shows a link for each file.")
     _cfg = sa.load_config()
     if args.jamendo_id:
         _cfg["jamendo_id"] = args.jamendo_id.strip()

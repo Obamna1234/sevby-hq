@@ -994,7 +994,7 @@ def _cleanup_partial(out_dir: str, safe: str) -> None:
 _LAST_INFO: dict = {}  # metadata of the most recent yt-dlp download (used for cover repair)
 
 # "Best available" keeps YouTube's original audio (M4A/AAC) instead of re-encoding to MP3.
-QUALITY = {"best": True, "free": True, "jamendo_id": ""}
+QUALITY = {"best": True, "free": False, "jamendo_id": ""}
 LAST_FREE: dict = {}
 HQ_SONGS: list[str] = []  # songs that came from YouTube in this run (for the "find better quality" file)
 
@@ -2239,7 +2239,8 @@ def search_archive(title: str, artist: str, dur) -> dict | None:
             url = f"https://archive.org/download/{urllib.parse.quote(ident)}/{urllib.parse.quote(best[1])}"
             label = "FLAC" if best[0] == 3 else "MP3 (192k+)"
             return {"source": "Internet Archive", "urls": [(label, url)], "album": meta.get("metadata", {}).get("title"),
-                    "year": None, "cover_url": cover_url, "title": title}
+                    "year": None, "cover_url": cover_url, "title": title,
+                    "item_page": f"https://archive.org/details/{urllib.parse.quote(ident)}"}
     return None
 
 
@@ -2314,7 +2315,16 @@ def download_free_hq(query: str, out_dir: str, log) -> bool:
                     continue
                 final = os.path.join(out_dir, f"{safe}.{kind}")
                 os.replace(dest, final)
-                meta.setdefault("album", cand.get("album"))
+                if cand.get("source") == "Internet Archive" and artist:
+                    # The Archive's own album / cover text is whatever the uploader typed (it can be wrong).
+                    # Prefer the official details from iTunes; use the Archive's only if iTunes has none.
+                    try:
+                        it = itunes_lookup(artist, title, query)
+                    except Exception:
+                        it = None
+                    for k in ("album", "year", "track", "track_total", "cover_url"):
+                        if it and it.get(k) and not meta.get(k):
+                            meta[k] = it[k]
                 if not meta.get("album") and cand.get("album"):
                     meta["album"] = cand["album"]
                 if cand.get("year") and not meta.get("year"):
@@ -2336,6 +2346,9 @@ def download_free_hq(query: str, out_dir: str, log) -> bool:
                 log(f"  OK ({cand['source']}) -> {safe}.{kind}  [{cand['source']}, {real}, Creative Commons]")
                 if cand.get("page"):
                     log(f"  Credit: this track is on Jamendo - {cand['page']}")
+                if cand.get("item_page"):
+                    log(f"  Check the licence yourself: {cand['item_page']} "
+                        "(the Archive's licence label is set by the uploader and is not verified)")
                 return True
         return False
     except _Stopped:
@@ -2765,12 +2778,12 @@ class SevbyApp(_SevbyBase):
             ctk.CTkLabel(hq, text=expl, text_color=C_MUTED, font=ctk.CTkFont(size=11), anchor="w").pack(
                 fill="x", padx=42)
             self.quality_radios.append(rb)
-        self.free_hq = ctk.BooleanVar(value=bool(cfg.get("free_hq", True)))
-        self.free_chk = ctk.CTkCheckBox(hq, text="Check Jamendo + Internet Archive first",
-                                        variable=self.free_hq, command=self._save_prefs,
+        self.free_hq = ctk.BooleanVar(value=bool(cfg.get("free_sources", False)))
+        self.free_chk = ctk.CTkCheckBox(hq, text="Also check Jamendo + Internet Archive first (off by default)",
+                                        variable=self.free_hq, command=self._on_free_toggle,
                                         fg_color=C_ACCENT, hover_color=C_ACCENT_H, checkmark_color=C_ON_ACCENT)
         self.free_chk.pack(anchor="w", padx=18, pady=(10, 0))
-        ctk.CTkLabel(hq, text="Free, Creative Commons music, lossless (FLAC) when available",
+        ctk.CTkLabel(hq, text="Creative Commons copies, lossless (FLAC) when found. Tick to read what this means",
                      text_color=C_MUTED, font=ctk.CTkFont(size=11), anchor="w").pack(fill="x", padx=44)
         j_row = ctk.CTkFrame(hq, fg_color="transparent")
         j_row.pack(fill="x", padx=18, pady=(6, 12))
@@ -2897,7 +2910,7 @@ class SevbyApp(_SevbyBase):
             cfg["last_mode"] = self.mode.get()
             cfg["source"] = self.source.get()
             cfg["quality"] = self.quality.get()
-            cfg["free_hq"] = bool(self.free_hq.get())
+            cfg["free_sources"] = bool(self.free_hq.get())
             cfg["jamendo_id"] = self.jamendo_id.get().strip()
             cfg["log_open"] = bool(self.log_open)
             folder = self.folder_entry.get().strip()
@@ -3538,6 +3551,65 @@ class SevbyApp(_SevbyBase):
         y = max(0, (sh - height) // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
 
+    FREE_NOTICE = (
+        "What this does\n"
+        "SEVBY HQ looks for each song on Jamendo and the Internet Archive first. If it finds a matching copy "
+        "that is labelled Creative Commons, it downloads that file (often FLAC) instead of using Bandcamp or "
+        "YouTube. Album, year and cover art come from Apple's iTunes search when available.\n\n"
+        "Please read before turning it on\n"
+        "\u2022 Both sites let anyone upload music and choose its licence label, and nobody checks it. A song "
+        "labelled \u201cCreative Commons\u201d may not really be free to download, and a file can be a mislabelled "
+        "copy of a commercial song.\n"
+        "\u2022 SEVBY HQ cannot verify this for you. It only matches the title, artist and length. The log shows "
+        "where every file came from, with a link, so you can check it yourself.\n"
+        "\u2022 You are responsible for keeping only music you have the right to download. If you are unsure, "
+        "leave this off.\n"
+        "\u2022 Jamendo needs your own free Client ID. By using it you agree to Jamendo's API terms (which include "
+        "crediting Jamendo and the artists).\n"
+        "\u2022 Most songs will not be found there at all. They fall back to Bandcamp or YouTube as usual."
+    )
+
+    def show_free_notice(self) -> bool:
+        """Modal explanation shown when the free sources are switched on. True = the user accepts."""
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Free sources: what you are turning on")
+        self._apply_icon(dlg)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        w, h = 500, 560
+        self.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - h) // 2)
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+        result = {"ok": False}
+        frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=18, pady=14)
+        ctk.CTkLabel(frame, text="Jamendo + Internet Archive", font=ctk.CTkFont(size=16, weight="bold")).pack(
+            anchor="w", pady=(0, 8))
+        ctk.CTkLabel(frame, text=self.FREE_NOTICE, justify="left", anchor="w", wraplength=450,
+                     font=ctk.CTkFont(size=12)).pack(anchor="w", fill="x")
+        row = ctk.CTkFrame(frame, fg_color="transparent")
+        row.pack(pady=(16, 0))
+
+        def accept():
+            result["ok"] = True
+            dlg.destroy()
+
+        ctk.CTkButton(row, text="I understand, turn on", width=170, fg_color=C_ACCENT, hover_color=C_ACCENT_H,
+                      text_color=C_ON_ACCENT, command=accept).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(row, text="Keep it off", width=110, fg_color=C_SURFACE, hover_color="#2a2a30",
+                      text_color=C_TEXT, command=dlg.destroy).pack(side="left")
+        dlg.focus_set()
+        self.wait_window(dlg)
+        return result["ok"]
+
+    def _on_free_toggle(self):
+        """Ticking the box shows the notice first; if it is not accepted the box is cleared again."""
+        if self.free_hq.get() and not self.show_free_notice():
+            self.free_hq.set(False)
+        self._save_prefs()
+
     def show_client_id_help(self):
         """Centered help dialog over the main window."""
         dlg = ctk.CTkToplevel(self)
@@ -4017,7 +4089,7 @@ class SevbyApp(_SevbyBase):
         out_dir = job["out_dir"]
         source = job["source"]
         opts = {"use_bc": source != "YouTube only", "use_yt": source != "Bandcamp only",
-                "free": bool(job.get("free_hq", True))}
+                "free": bool(job.get("free_hq", False))}
         QUALITY["best"] = str(job.get("quality", "")).startswith("Best")
         QUALITY["free"] = opts["free"]
         QUALITY["jamendo_id"] = job.get("jamendo_id", "") or ""

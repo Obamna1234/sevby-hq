@@ -38,7 +38,7 @@ SEVBY HQ looks for each song on **Bandcamp** first, and falls back to **YouTube*
 
 | | SEVBY | SEVBY HQ |
 |---|---|---|
-| Free lossless sources | - | **Checks Jamendo and the Internet Archive first** for Creative Commons copies in FLAC (or 192 kbps+ MP3). Only a small share of songs are there, so most will still come from Bandcamp / YouTube |
+| Free lossless sources | - | **Optional, off by default.** When you turn it on, it checks Jamendo and the Internet Archive first for copies labelled Creative Commons, in FLAC (or 192 kbps+ MP3). Only a small share of songs are there, so most will still come from Bandcamp / YouTube |
 | YouTube songs | Converted to MP3 | **Original audio kept as M4A**, no extra re-encoding (falls back to MP3 if no M4A exists) |
 | Bandcamp songs | 128 kbps MP3 (Bandcamp's stream) | Same |
 | Honest log | `OK` | Each song says what you actually got, e.g. `[YouTube original audio (M4A/AAC ~129 kbps)]` |
@@ -51,15 +51,15 @@ If you want files that play everywhere, use the original SEVBY (or pick *Standar
 
 For each song, in this order:
 
-1. **Jamendo** and the **Internet Archive**, but only music under a Creative Commons licence (free and legal to download). If the same song is there as FLAC or a high-bitrate MP3, that file is used, and the log says so, e.g. `[Internet Archive, FLAC, Creative Commons]`.
+1. **Jamendo** and the **Internet Archive**, but **only if you have turned on "Also check Jamendo + Internet Archive first"** (it is off by default; see the warning below). Only copies labelled Creative Commons are used. If the same song is there as FLAC or a high-bitrate MP3, that file is used, and the log says so, e.g. `[Internet Archive, FLAC, Creative Commons]`, with a link to the item so you can check it. Album, year and cover art for these files come from Apple's iTunes search when available, not from the uploader's text.
 2. **Bandcamp** (the free 128 kbps stream), as in the original SEVBY.
 3. **YouTube**, keeping the original audio as M4A.
 
-The first two only know music its artists chose to release freely, so most mainstream songs will not be there and will fall through to Bandcamp / YouTube. To avoid saving the wrong song, a file is only used when the title, artist and length all match closely. Jamendo is **optional and needs your own free Client ID**. Register at <https://devportal.jamendo.com>, create an app, and paste your ID into the box once. There is no shared key, because Jamendo's terms say keys are personal. By using your own key you agree to [Jamendo's API terms](https://devportal.jamendo.com/api_terms_of_use) yourself, which include crediting Jamendo and the artists (the log prints each track's Jamendo link) and not building an offline-access service. If you are unsure, leave the box empty and only the Internet Archive is checked. Untick the box in the app (or use `--no-free` in Termux) to skip these sources.
+**Important:** Jamendo and the Internet Archive let anyone upload music and choose its licence label, and nobody checks it. A file labelled Creative Commons may be a mislabelled copy of a commercial song (during testing, a commercial rock song turned up on the Archive tagged this way). SEVBY HQ cannot verify the licence; it only matches the title, artist and length. That is why this option is off by default and shows a notice when you turn it on. **You are responsible for only keeping music you have the right to download.** If you are unsure, leave it off. Most songs will not be there anyway and will fall through to Bandcamp / YouTube. To avoid saving the wrong song, a file is only used when the title, artist and length all match closely. Jamendo is **optional and needs your own free Client ID**. Register at <https://devportal.jamendo.com>, create an app, and paste your ID into the box once. There is no shared key, because Jamendo's terms say keys are personal. By using your own key you agree to [Jamendo's API terms](https://devportal.jamendo.com/api_terms_of_use) yourself, which include crediting Jamendo and the artists (the log prints each track's Jamendo link) and not building an offline-access service. If you are unsure, leave the box empty and only the Internet Archive is checked. In Termux, add `--free` to turn these sources on. Leave the box unticked (or leave out `--free`) to skip them.
 
 ## Be realistic about quality
 
-- **FLAC is the exception, not the rule.** SEVBY HQ only gets FLAC when a song is on **Jamendo** or the **Internet Archive** under a Creative Commons licence *and* that copy is lossless. That is a small slice of music, mostly independent artists. For most songs (anything commercial or mainstream) expect Bandcamp's 128 kbps stream or YouTube's M4A instead. In a typical playlist, few or none of the songs will come as FLAC.
+- **FLAC is the exception, not the rule.** SEVBY HQ only gets FLAC if you have turned on the free sources *and* a song is on **Jamendo** or the **Internet Archive** with a Creative Commons label *and* that copy is lossless. That is a small slice of music, mostly independent artists. For most songs (anything commercial or mainstream) expect Bandcamp's 128 kbps stream or YouTube's M4A instead. In a typical playlist, few or none of the songs will come as FLAC.
 - Jamendo needs your own free Client ID (see below), and some artists switch downloads off. SEVBY HQ asks Jamendo for FLAC first and falls back to a high-bitrate MP3 if FLAC isn't offered. I have not been able to test every case, and Jamendo may require a logged-in account to serve FLAC files, in which case you would get the MP3 instead. The log always says which one you got.
 - Free lossless files exist only for music released under Creative Commons. Everything else is limited by what Bandcamp's free stream and YouTube offer:
 - Bandcamp's free stream and YouTube audio are only about **128-160 kbps**. SEVBY HQ keeps them as they are rather than re-encoding, which avoids losing a little more quality. It **cannot make them better** than they started.
@@ -70,7 +70,7 @@ The first two only know music its artists chose to release freely, so most mains
 
 - Paste a list / `.txt` file of `Artist - Title` lines, **or** a shared **Apple Music playlist link** (no sign-in), **or** a Spotify playlist link (needs a Spotify Client ID, which currently requires Spotify Premium to create; see below)
 - Bandcamp first, YouTube for the rest (or choose *Bandcamp only* / *YouTube only*)
-- Checks **Jamendo and the Internet Archive** first for free, Creative Commons lossless copies
+- **Optional (off by default):** checks **Jamendo and the Internet Archive** first for copies labelled Creative Commons, lossless when available. Licence labels there are set by uploaders and are not verified, so a notice explains this when you turn it on
 - Choose **Best available (M4A)** or **Standard (MP3)** for YouTube audio
 - Title, artist, album, year, track number and square cover art
 - YouTube matching picks the version with the right length and avoids live / remix / sped-up uploads
