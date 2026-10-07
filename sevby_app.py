@@ -2738,43 +2738,79 @@ def network_test_text() -> str:
     return "\n".join(out)
 
 
-class _Icon(tk.Canvas):
-    """Small line icon (file / globe / link) drawn with plain Tk shapes (no extra libraries needed)."""
+def _icon_png_b64(kind: str, color: str, size: int = 18) -> str:
+    """A smooth (anti-aliased) line icon as a transparent PNG, drawn in pure Python (no extra libraries)."""
+    import base64, math, struct, zlib
+    r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    u = size / 24.0
+    w = 2.1 * u
 
-    def __init__(self, master, kind: str, color: str, bg: str, size: int = 16):
-        super().__init__(master, width=size, height=size, bg=bg, highlightthickness=0, bd=0)
-        kw = dict(fill=color, width=2, capstyle="round", joinstyle="round")
+    def seg(px, py, x1, y1, x2, y2):
+        dx, dy = x2 - x1, y2 - y1
+        t = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
+        return math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+
+    def poly(px, py, pts):
+        return min(seg(px, py, *pts[i], *pts[i + 1]) for i in range(len(pts) - 1))
+
+    def dist(px, py):
+        x, y = px / u, py / u
         if kind == "file":
-            self.create_line(4, 2, 10, 2, 13, 5, 13, 14, 4, 14, 4, 2, **kw)
-            self.create_line(10, 2, 10, 5, 13, 5, **kw)
+            d = min(poly(x, y, [(5, 3), (14, 3), (19, 8), (19, 21), (5, 21), (5, 3)]),
+                    poly(x, y, [(14, 3), (14, 8), (19, 8)]))
         elif kind == "globe":
-            self.create_oval(2, 2, 14, 14, outline=color, width=2)
-            self.create_oval(5.5, 2, 10.5, 14, outline=color, width=1.5)
-            self.create_line(2, 8, 14, 8, **kw)
-        else:  # link: two overlapping rounded links
-            self.create_oval(0.5, 4.5, 9, 11.5, outline=color, width=2)
-            self.create_oval(7, 4.5, 15.5, 11.5, outline=color, width=2)
+            d = min(abs(math.hypot(x - 12, y - 12) - 9),
+                    abs(math.hypot((x - 12) / 4.2, (y - 12) / 9) - 1) * 6.0,
+                    seg(x, y, 3, 12, 21, 12))
+        else:  # link: two interlocking capsules
+            d = min(abs(seg(x, y, 4.6, 12, 10.2, 12) - 3.7), abs(seg(x, y, 13.8, 12, 19.4, 12) - 3.7))
+        return d * u
+
+    ss = 6
+    rows = []
+    for j in range(size):
+        row = bytearray([0])
+        for i in range(size):
+            hit = 0
+            for sj in range(ss):
+                for si in range(ss):
+                    if dist(i + (si + 0.5) / ss, j + (sj + 0.5) / ss) <= w / 2:
+                        hit += 1
+            row += bytes((r, g, b, round(255 * hit / (ss * ss))))
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
+    return base64.b64encode(png).decode("ascii")
 
 
 class IconButton(ctk.CTkFrame):
     """Outlined button with an icon + name on the first line and a small grey line under it."""
 
-    def __init__(self, master, icon: str, title: str, sub: str, command, accent: str, height: int = 52):
+    def __init__(self, master, icon: str, title: str, sub: str, command, accent: str, height: int = 54):
         super().__init__(master, height=height, width=10, fg_color=C_BG, border_width=1,
                          border_color="#33333a", corner_radius=6)
         self.grid_propagate(False)
         self.pack_propagate(False)
         self._command, self._enabled = command, True
-        inner = ctk.CTkFrame(self, fg_color="transparent")
+        inner = tk.Frame(self, bg=C_BG, bd=0, highlightthickness=0)
         inner.place(relx=0.5, rely=0.5, anchor="center")
-        top = ctk.CTkFrame(inner, fg_color="transparent")
+        top = tk.Frame(inner, bg=C_BG, bd=0, highlightthickness=0)
         top.pack()
-        self._ic = _Icon(top, icon, accent, C_BG)
+        self._img = tk.PhotoImage(data=_icon_png_b64(icon, accent))
+        self._ic = tk.Label(top, image=self._img, bg=C_BG, bd=0, highlightthickness=0)
         self._ic.pack(side="left", padx=(0, 6))
-        self._t = ctk.CTkLabel(top, text=title, text_color=C_TEXT, font=ctk.CTkFont(size=13, weight="bold"))
+        self._t = ctk.CTkLabel(top, text=title, text_color=C_TEXT, fg_color=C_BG, height=20, corner_radius=0,
+                               font=ctk.CTkFont(size=13, weight="bold"))
         self._t.pack(side="left")
-        self._s = ctk.CTkLabel(inner, text=sub, text_color=C_MUTED, font=ctk.CTkFont(size=11))
+        self._s = ctk.CTkLabel(inner, text=sub, text_color=C_MUTED, fg_color=C_BG, height=16, corner_radius=0,
+                               font=ctk.CTkFont(size=11))
         self._s.pack()
+        self._tk_bg = (inner, top, self._ic)
         self._parts = (self, inner, top, self._ic, self._t, self._s)
         self.bind("<Enter>", lambda _e: self._hover(True))
         self.bind("<Leave>", lambda _e: self._hover(False))
@@ -2787,11 +2823,16 @@ class IconButton(ctk.CTkFrame):
             else:
                 w.bind(seq, func, add="+")
 
+    def _paint(self, bg: str):
+        ctk.CTkFrame.configure(self, fg_color=bg)
+        for w in self._tk_bg:
+            w.configure(bg=bg)
+        self._t.configure(fg_color=bg)
+        self._s.configure(fg_color=bg)
+
     def _hover(self, on: bool):
         if self._enabled:
-            bg = "#2a2a30" if on else C_BG
-            ctk.CTkFrame.configure(self, fg_color=bg)
-            self._ic.configure(bg=bg)
+            self._paint("#2a2a30" if on else C_BG)
 
     def _click(self, e):
         inside = (self.winfo_rootx() <= e.x_root <= self.winfo_rootx() + self.winfo_width()
@@ -2802,11 +2843,9 @@ class IconButton(ctk.CTkFrame):
     def configure(self, **kw):
         if "state" in kw:
             self._enabled = kw.pop("state") != "disabled"
-            col = C_TEXT if self._enabled else "#5a5a62"
-            self._t.configure(text_color=col)
+            self._t.configure(text_color=C_TEXT if self._enabled else "#5a5a62")
             self._s.configure(text_color=C_MUTED if self._enabled else "#4a4a52")
-            ctk.CTkFrame.configure(self, fg_color=C_BG)
-            self._ic.configure(bg=C_BG)
+            self._paint(C_BG)
         if kw:
             super().configure(**kw)
 
@@ -2968,11 +3007,12 @@ class SevbyApp(_SevbyBase):
         Tooltip(self.load_btn, "Import songs from a file: .txt (one 'Artist - Title' per line), .csv (e.g. from "
                                "TuneMyMusic or Soundiiz), .tsv or .m3u playlists.")
         Tooltip(self.chosic_btn, "Opens the Chosic website in your browser. Paste a PUBLIC Spotify playlist link "
-                                 "there, copy or download the song list it gives you, then paste it into the "
-                                 "box above or use Import .txt. No Spotify account or keys needed.")
-        Tooltip(self.apple_btn, "Opens a small window: paste a shared Apple Music playlist or album link "
-                                "(Share > Copy Link) and click Load. The songs are added to the box above "
-                                "automatically. The playlist must be public.")
+                                 "there, then copy or download the song list it gives you. Back here, paste it "
+                                 "into the box above or click Import (.txt or .csv). No Spotify account or keys "
+                                 "needed.")
+        Tooltip(self.apple_btn, "Opens a small window. Paste a PUBLIC Apple Music playlist or album link "
+                                "(Share > Copy Link) and click Get songs. If you already copied the link, it is "
+                                "filled in for you. The songs then appear in the box above.")
         self.clear_songs_btn = ctk.CTkButton(btn_row, text="Clear list", width=84, height=32,
                                              fg_color="transparent", border_width=1, border_color=C_ERR,
                                              text_color=C_ERR, hover_color="#2a2a30", command=self.clear_songs)
@@ -3013,8 +3053,8 @@ class SevbyApp(_SevbyBase):
                             hover_color=C_ACCENT_H, text_color=C_ON_ACCENT, command=self.open_chosic)
         _cb.pack(side="right")
         Tooltip(_cb, "Opens the Chosic website in your browser. Paste a PUBLIC Spotify playlist link there, "
-                     "copy the song list it gives you, then switch to Song list mode and paste it. "
-                     "No Spotify account or keys needed.")
+                     "then copy or download the song list it gives you. Back here, switch to the Song list tab "
+                     "and paste it, or click Import (.txt or .csv). No Spotify account or keys needed.")
         if cfg.get("client_id"):
             self.client_id.insert(0, cfg["client_id"])
         if cfg.get("client_secret"):
@@ -3338,7 +3378,7 @@ class SevbyApp(_SevbyBase):
 
         acard = ctk.CTkFrame(body, fg_color=C_SURFACE, corner_radius=10)
         acard.pack(fill="x", padx=14, pady=(12, 0))
-        ctk.CTkLabel(acard, text=f"{APP_NAME} app", font=ctk.CTkFont(size=15, weight="bold"),
+        ctk.CTkLabel(acard, text=APP_NAME, font=ctk.CTkFont(size=15, weight="bold"),
                      anchor="w").pack(fill="x", padx=14, pady=(12, 0))
         ctk.CTkLabel(acard, text=f"Version {VERSION}", anchor="w").pack(fill="x", padx=14)
         astatus = ctk.CTkLabel(acard, text="", anchor="w", text_color=C_MUTED)
@@ -3699,7 +3739,7 @@ class SevbyApp(_SevbyBase):
             "Opened the Chosic website in your browser (it only works with PUBLIC Spotify playlists).\n"
             "1) Paste your public Spotify playlist link there\n"
             "2) Download / copy the song list as text\n"
-            "3) Switch to \u201cSong list / .txt file\u201d in SEVBY and paste or load it"
+            "3) Switch to \u201cSong list / .txt file\u201d in SEVBY and paste it, or click Import (.txt or .csv)"
         )
 
     def open_apple_dialog(self):
