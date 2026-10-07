@@ -785,6 +785,36 @@ def _structured_to_lines(text: str) -> list[str] | None:
     return out or None
 
 
+_SMALL_WORDS = {"a", "an", "the", "of", "and", "or", "but", "in", "on", "at", "to", "for", "by", "vs", "with", "from"}
+
+
+def _smart_case(part: str) -> str:
+    """'the black sheep' -> 'The Black Sheep' (small words stay lower-case except the first one)."""
+    words = part.split(" ")
+    out = []
+    for i, w in enumerate(words):
+        if not w:
+            out.append(w)
+            continue
+        if i > 0 and w in _SMALL_WORDS:
+            out.append(w)
+            continue
+        out.append("/".join(seg[:1].upper() + seg[1:] for seg in w.split("/")))
+    return " ".join(out)
+
+
+def fix_case(line: str) -> str:
+    """Only for lines typed entirely in lower case: give 'artist - title' normal capital letters.
+    Lines that already contain a capital letter are left exactly as written."""
+    if not line or line != line.lower() or not any(c.isalpha() for c in line):
+        return line
+    for sep in (" - ", " \u2013 ", " \u2014 "):
+        if sep in line:
+            a, t = line.split(sep, 1)
+            return _smart_case(a.strip()) + sep + _smart_case(t.strip())
+    return _smart_case(line)
+
+
 def parse_song_lines(text: str) -> list[str]:
     structured = _structured_to_lines(text)
     if structured is not None:
@@ -796,7 +826,7 @@ def parse_song_lines(text: str) -> list[str]:
             continue
         if "  \u2192  " in line:
             line = line.split("  \u2192  ")[0].strip()
-        songs.append(line)
+        songs.append(fix_case(line))
     return songs
 
 
@@ -1635,8 +1665,9 @@ def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True
         it = itunes_lookup(meta["artist"], meta.get("title") or "", query)
         if it:
             for k, v in it.items():
-                if v and not meta.get(k):
+                if v and not meta.get(k) and not k.endswith("_canon"):
                     meta[k] = v
+            apply_canon(meta, it)
 
     # Pick the best-matching video (right length, not a live/remix version) instead of the first hit.
     targets: list[str] = []
@@ -1722,8 +1753,16 @@ def version_set(text: str) -> set[str]:
     return {w for w in VERSION_WORDS if re.search(r"\b" + w + r"\b", low)}
 
 
+_LEAD_ARTICLE_RE = re.compile(r"^\s*(the|an|a)\s+", re.I)
+
+
+def _title_key(t: str) -> str:
+    """Letters and digits of a title, ignoring (feat. ...) / (Remastered) parts and a leading The / A / An."""
+    return _alnum(_LEAD_ARTICLE_RE.sub("", clean_title(t)))
+
+
 def _title_eq(a: str, b: str) -> bool:
-    return bool(_alnum(clean_title(a))) and _alnum(clean_title(a)) == _alnum(clean_title(b))
+    return bool(_title_key(a)) and _title_key(a) == _title_key(b)
 
 
 def _strip_artist_prefix(name: str, artists: list[str]) -> str:
@@ -1891,6 +1930,37 @@ def itunes_choose(results: list[dict], artist: str, title: str, line: str) -> di
     return best
 
 
+def apply_canon(meta: dict, it: dict | None) -> None:
+    """Use Apple's spelling and capitals for the title / artist tags when they only differ from the typed
+    line in capitals, punctuation or a leading 'The' ('kataklysm - black sheep' -> Kataklysm / The Black Sheep)."""
+    if not it:
+        return
+    t, a = it.get("title_canon"), it.get("artist_canon")
+    if t and meta.get("title") and _title_eq(t, meta["title"]):
+        meta["title"] = t
+    if a and meta.get("artist") and _alnum(a) == _alnum(meta["artist"]):
+        meta["artist"] = a
+
+
+def canonical_line(song: str) -> str:
+    """'kataklysm - black sheep' / 'KATAKLYSM - The BLACK sheep' -> 'Kataklysm - The Black Sheep' when Apple Music
+    knows the song and the only differences are capitals, punctuation or a leading 'The'. Otherwise unchanged."""
+    if song in SONG_META or STOP_EVENT.is_set():
+        return song
+    artist, title = _split_query(song)
+    if not artist or not title:
+        return song
+    try:
+        it = itunes_lookup(artist, title, song)
+    except Exception:
+        return song
+    meta = {"artist": artist, "title": title}
+    apply_canon(meta, it)
+    if meta["artist"] == artist and meta["title"] == title:
+        return song
+    return f"{meta['artist']} - {meta['title']}"
+
+
 def itunes_lookup(artist: str, title: str, line: str = "") -> dict | None:
     """Album / year / track / cover / length for a song from the iTunes Search API (no key needed)."""
     key = (_alnum(artist), _alnum(title))
@@ -1921,6 +1991,8 @@ def itunes_lookup(artist: str, title: str, line: str = "") -> dict | None:
                 "track_total": r.get("trackCount") or None,
                 "duration": (r.get("trackTimeMillis") or 0) / 1000.0 or None,
                 "cover_url": re.sub(r"/\d+x\d+bb", "/1000x1000bb", art) if art else None,
+                "title_canon": clean_title(r.get("trackName") or "") or None,
+                "artist_canon": (r.get("artistName") or "").strip() or None,
             }
             break
     _ITUNES_CACHE[key] = found
@@ -2027,8 +2099,12 @@ def retag_bandcamp(out_dir: str, safe: str, query: str) -> tuple[str, str]:
         m = re.match(r"(\d+)(?:\s*/\s*(\d+))?", tags["track"])
         if m:
             track, total = int(m.group(1)), (int(m.group(2)) if m.group(2) else None)
+    it = None
+    if meta.get("artist") and (not album or not year or query not in SONG_META):
+        it = itunes_lookup(meta.get("artist") or "", meta.get("title") or "", query)
+        if query not in SONG_META:
+            apply_canon(meta, it)
     if not album or not year:
-        it = itunes_lookup(meta.get("artist") or "", meta.get("title") or "", query) if meta.get("artist") else None
         if it:
             album = album or it.get("album") or ""
             year = year or it.get("year") or ""
@@ -2053,13 +2129,22 @@ def process_song(song: str, out_dir: str, opts: dict, state: dict, say, step=lam
     """One song, start to finish. Used by the window and the command-line version.
     opts: use_bc, use_yt, free.  state: seen (set), bc_errors (int), bandcamp_down (bool).
     Returns {'status': ok|skip|dup|fail, 'source': ..., 'note': ..., 'path': ...}."""
+    typed_safe = sanitize_filename(song)
+    if typed_safe.lower() in state.setdefault("seen", set()):
+        return {"status": "dup", "source": None, "note": "listed twice"}
+    step("Checking the folder\u2026")
+    if existing_song(out_dir, typed_safe):
+        state.setdefault("seen", set()).add(typed_safe.lower())
+        return {"status": "skip", "source": None, "note": "already downloaded"}
+    # file name = the official spelling (Apple Music), however the line was typed
+    song = canonical_line(song)
     safe = sanitize_filename(song)
     key = safe.lower()
-    if key in state.setdefault("seen", set()):
+    if key in state.setdefault("seen", set()) or typed_safe.lower() in state["seen"]:
         return {"status": "dup", "source": None, "note": "listed twice"}
     state["seen"].add(key)
+    state["seen"].add(typed_safe.lower())
 
-    step("Checking the folder\u2026")
     if existing_song(out_dir, safe):
         return {"status": "skip", "source": None, "note": "already downloaded"}
 
@@ -2364,16 +2449,19 @@ def download_free_hq(query: str, out_dir: str, log) -> bool:
                     continue
                 final = os.path.join(out_dir, f"{safe}.{kind}")
                 os.replace(dest, final)
-                if cand.get("source") == "Internet Archive" and artist:
+                if artist:
                     # The Archive's own album / cover text is whatever the uploader typed (it can be wrong).
                     # Prefer the official details from iTunes; use the Archive's only if iTunes has none.
                     try:
                         it = itunes_lookup(artist, title, query)
                     except Exception:
                         it = None
-                    for k in ("album", "year", "track", "track_total", "cover_url"):
-                        if it and it.get(k) and not meta.get(k):
-                            meta[k] = it[k]
+                    if query not in SONG_META:
+                        apply_canon(meta, it)
+                    if cand.get("source") == "Internet Archive":
+                        for k in ("album", "year", "track", "track_total", "cover_url"):
+                            if it and it.get(k) and not meta.get(k):
+                                meta[k] = it[k]
                 if not meta.get("album") and cand.get("album"):
                     meta["album"] = cand["album"]
                 if cand.get("year") and not meta.get("year"):
@@ -2620,6 +2708,64 @@ def network_test_text() -> str:
     return "\n".join(out)
 
 
+class Tooltip:
+    """Small hover message for any widget (shows after a short pause, hides when the mouse leaves)."""
+
+    _all: list = []
+
+    def __init__(self, widget, text: str, delay: int = 450, wrap: int = 300):
+        Tooltip._all.append(self)
+        self.widget, self.text, self.delay, self.wrap = widget, text, delay, wrap
+        self._job = None
+        self._win = None
+        for ev, fn in (("<Enter>", self._schedule), ("<Leave>", self._hide), ("<ButtonPress>", self._hide)):
+            try:
+                widget.bind(ev, fn, add="+")
+            except Exception:
+                pass
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        self._job = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self._job:
+            try:
+                self.widget.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+
+    def _show(self):
+        self._job = None
+        if self._win is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 12
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            win = tk.Toplevel(self.widget)
+            win.wm_overrideredirect(True)
+            win.attributes("-topmost", True)
+            tk.Label(win, text=self.text, justify="left", wraplength=self.wrap, bg="#2A2A30", fg="#F2F2F2",
+                     relief="solid", borderwidth=1, padx=9, pady=6, font=("Segoe UI", 9)).pack()
+            win.update_idletasks()
+            sw = win.winfo_screenwidth()
+            x = max(0, min(x, sw - win.winfo_reqwidth() - 8))
+            win.wm_geometry(f"+{x}+{y}")
+            self._win = win
+        except Exception:
+            self._win = None
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self._win is not None:
+            try:
+                self._win.destroy()
+            except Exception:
+                pass
+            self._win = None
+
+
 class SevbyApp(_SevbyBase):
     SOURCE_CHOICES = (
         ("Both", "Bandcamp + YouTube", "Bandcamp first, YouTube for anything Bandcamp doesn't have"),
@@ -2712,14 +2858,22 @@ class SevbyApp(_SevbyBase):
             btn_row.grid_columnconfigure(_c, weight=_w, uniform="sb" if _w else "")
         _kw = dict(height=32, fg_color=C_BG, hover_color="#2a2a30", text_color=C_TEXT, border_width=1,
                    border_color="#33333a", width=10)
-        self.load_btn = ctk.CTkButton(btn_row, text="Load .txt", command=self.load_txt, **_kw)
+        self.load_btn = ctk.CTkButton(btn_row, text="Import .txt", command=self.load_txt, **_kw)
         self.load_btn.grid(row=0, column=0, sticky="ew")
-        self.chosic_btn = ctk.CTkButton(btn_row, text="Open Chosic (export playlist to .txt)",
+        self.chosic_btn = ctk.CTkButton(btn_row, text="Open Chosic website (Spotify link)",
                                         command=self.open_chosic, **_kw)
         self.chosic_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        self.apple_btn = ctk.CTkButton(btn_row, text="Apple Music (paste playlist link)",
+        self.apple_btn = ctk.CTkButton(btn_row, text="Apple Music (paste link)",
                                        command=self.open_apple_dialog, **_kw)
         self.apple_btn.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        Tooltip(self.load_btn, "Import songs from a file: .txt (one 'Artist - Title' per line), .csv (e.g. from "
+                               "TuneMyMusic or Soundiiz), .tsv or .m3u playlists.")
+        Tooltip(self.chosic_btn, "Opens the Chosic website in your browser. Paste a PUBLIC Spotify playlist link "
+                                 "there, copy or download the song list it gives you, then paste it into the "
+                                 "box above or use Import .txt. No Spotify account or keys needed.")
+        Tooltip(self.apple_btn, "Opens a small window: paste a shared Apple Music playlist or album link "
+                                "(Share > Copy Link) and click Load. The songs are added to the box above "
+                                "automatically. The playlist must be public.")
         self.clear_songs_btn = ctk.CTkButton(btn_row, text="Clear list", width=84, height=32,
                                              fg_color="transparent", border_width=1, border_color=C_ERR,
                                              text_color=C_ERR, hover_color="#2a2a30", command=self.clear_songs)
@@ -2754,10 +2908,14 @@ class SevbyApp(_SevbyBase):
         self.client_secret.pack(fill="x", padx=12, pady=2)
         chosic_row = ctk.CTkFrame(self.sp_frame, fg_color="transparent")
         chosic_row.pack(fill="x", padx=12, pady=(8, 10))
-        ctk.CTkLabel(chosic_row, text="No keys? Export a .txt with Chosic instead:", text_color=C_MUTED,
-                     font=ctk.CTkFont(size=11)).pack(side="left")
-        ctk.CTkButton(chosic_row, text="Open Chosic", width=110, height=28, fg_color=C_ACCENT,
-                      hover_color=C_ACCENT_H, text_color=C_ON_ACCENT, command=self.open_chosic).pack(side="right")
+        ctk.CTkLabel(chosic_row, text="No keys? Use the Chosic website with a PUBLIC playlist link:",
+                     text_color=C_MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
+        _cb = ctk.CTkButton(chosic_row, text="Open Chosic website", width=150, height=28, fg_color=C_ACCENT,
+                            hover_color=C_ACCENT_H, text_color=C_ON_ACCENT, command=self.open_chosic)
+        _cb.pack(side="right")
+        Tooltip(_cb, "Opens the Chosic website in your browser. Paste a PUBLIC Spotify playlist link there, "
+                     "copy the song list it gives you, then switch to Song list mode and paste it. "
+                     "No Spotify account or keys needed.")
         if cfg.get("client_id"):
             self.client_id.insert(0, cfg["client_id"])
         if cfg.get("client_secret"):
@@ -3439,8 +3597,8 @@ class SevbyApp(_SevbyBase):
         """Open Chosic playlist exporter in the default browser."""
         webbrowser.open("https://www.chosic.com/spotify-playlist-exporter/")
         self.log(
-            "Opened Chosic in your browser.\n"
-            "1) Paste your Spotify playlist link there\n"
+            "Opened the Chosic website in your browser (it only works with PUBLIC Spotify playlists).\n"
+            "1) Paste your public Spotify playlist link there\n"
             "2) Download / copy the song list as text\n"
             "3) Switch to \u201cSong list / .txt file\u201d in SEVBY and paste or load it"
         )
