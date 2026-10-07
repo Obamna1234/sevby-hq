@@ -1743,6 +1743,37 @@ _BC_BADVER_RE = re.compile(
     r"in the style of|\bversions?\b|rerecord|lullaby|8-?bit|piano (version|tribute)", re.I)
 
 
+def _plain(s: str) -> str:
+    """Lower-case letters and digits only, accents removed ('Sigur R\u00f3s' -> 'sigurros')."""
+    import unicodedata
+    s = unicodedata.normalize("NFD", (s or "").replace("&", " and "))
+    return re.sub(r"[\W_]+", "", "".join(c for c in s if unicodedata.category(c) != "Mn").lower())
+
+
+def _host_is_artist(url: str, cands: list[str]) -> bool:
+    """True if the page's web address belongs to the artist: artist.bandcamp.com, or the artist's own
+    domain such as store.sigurros.com. Pages run by DJs, fans or compilation accounts that merely credit
+    the artist (a remix, a cover, a re-upload) are not accepted."""
+    m = re.match(r"https?://([^/]+)", url or "")
+    if not m:
+        return False
+    labels = m.group(1).lower().split(".")
+    names = [labels[0]]
+    if len(labels) >= 3 and not m.group(1).lower().endswith("bandcamp.com"):
+        names.append(labels[-2])
+    names = [_plain(n) for n in names if n]
+    variants = []
+    for a in cands:
+        for v in (_plain(a), _plain(a.replace("&", " "))):
+            if v and v not in variants:
+                variants.append(v)
+    for a in variants:
+        for h in names:
+            if h and (a == h or ((a in h or h in a) and min(len(a), len(h)) / max(len(a), len(h)) >= 0.75)):
+                return True
+    return False
+
+
 def bc_choose(results: list[dict], query: str) -> dict | None:
     """Pick the right Bandcamp TRACK: same title, same artist, same kind of version."""
     artist, title = _split_query(query)
@@ -1750,7 +1781,7 @@ def bc_choose(results: list[dict], query: str) -> dict | None:
         return None  # a line without an artist is never matched (it goes to YouTube)
     want_artists = artists_of(artist)
     want_ver = version_set(title)
-    best, best_score = None, -999.0
+    pool: list[tuple[float, dict, bool]] = []
     for i, r in enumerate(results):
         url = r.get("url") or ""
         if "/track/" not in url:
@@ -1768,6 +1799,7 @@ def bc_choose(results: list[dict], query: str) -> dict | None:
             continue
         if version_set(name) != want_ver:
             continue
+        own = _host_is_artist(url, cands + [artist])
         album_txt = r.get("album_name") or ""
         if _BC_BADVER_RE.search(name + " " + album_txt) and not _BC_BADVER_RE.search(query):
             continue  # remake / tribute / cover / bootleg / "dubs" release
@@ -1780,9 +1812,26 @@ def bc_choose(results: list[dict], query: str) -> dict | None:
         album = r.get("album_name") or ""
         if album:
             score += -5 if _COMPILATION_RE.search(album) else 2
-        if score > best_score:
-            best, best_score = r, score
-    return best
+        pool.append((score, r, own))
+    # 1. The artist's own page (artist.bandcamp.com or the artist's domain) wins.
+    for score, r, own in sorted(pool, key=lambda x: x[0], reverse=True):
+        if own:
+            return r
+    # 2. Another account (a label, a DJ, a fan, a compilation) is only trusted when its album is the
+    #    same album Apple lists for this song. This stops re-uploads, covers and "various" pages that
+    #    merely credit the artist.
+    others = sorted((x for x in pool if not x[2]), key=lambda x: x[0], reverse=True)
+    if others:
+        try:
+            it = itunes_lookup(artist, title, query)
+        except Exception:
+            it = None
+        real_album = (it or {}).get("album") or ""
+        if real_album:
+            for score, r, own in others:
+                if _title_eq(r.get("album_name") or "", real_album):
+                    return r
+    return None
 
 
 _ITUNES_CACHE: dict = {}
