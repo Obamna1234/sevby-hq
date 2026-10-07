@@ -10,26 +10,26 @@
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/cf6b70f9-0a9f-4616-8dde-94aee6dc89d4" alt="image" width="600">
+<img src="https://github.com/user-attachments/assets/753c3c53-b653-4b6a-80ee-5de6d8763ad3" alt="image" width="600">
 <br><em>SEVBY HQ v0.10.0-beta UI for pasting a Spotify URL playlist</em>
 </p>
 
 <p align="center">
 <img src="https://github.com/user-attachments/assets/11bdcd84-164c-4ca7-a103-b5ed7a2fb3c4" alt="image" width="600">
-<br><em>SEVBY HQ v0.10.0-beta exporting a Apple Music playlist URL to .txt &amp; automatically pasting into the text box</em>
+<br><em>SEVBY HQ v0.10.0-beta downloading from .txt and UI for log</em>
 </p>
 
 <p align="center">
 <img src="https://github.com/user-attachments/assets/0d7652ca-9297-4d80-83ff-af221767b09e" alt="image" width="600">
-<br><em>SEVBY HQ v0.10.0-beta About &amp; Updates window</em>
+<br><em>SEVBY HQ v0.10.0-beta exporting a Apple Music playlist URL to .txt & automatically pasting into the text box
 </p>
 
 <p align="center">
-<img src="https://github.com/user-attachments/assets/753c3c53-b653-4b6a-80ee-5de6d8763ad3" alt="image" width="600">
-<br><em>SEVBY HQ v0.10.0-beta (fifth screenshot: add your own caption here)</em>
+<img src="https://github.com/user-attachments/assets/cf6b70f9-0a9f-4616-8dde-94aee6dc89d4" alt="image" width="600">
+<br><em>SEVBY HQ v0.10.0-beta About &amp; Updates window</em>
 </p>
 
-A sibling of [SEVBY](https://github.com/Obamna1234/sevby). Same idea, with options for better audio quality.
+The golden child of [SEVBY](https://github.com/Obamna1234/sevby). Same idea, with options for better audio quality.
 
 Turn a plain text list of songs (or a Spotify playlist) into tagged audio files on your own computer.
 SEVBY HQ looks for each song on **Bandcamp** first, and falls back to **YouTube** for anything it can't find.
