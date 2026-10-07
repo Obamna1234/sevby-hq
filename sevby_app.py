@@ -1912,6 +1912,56 @@ def existing_song(out_dir: str, safe: str) -> str | None:
     return found
 
 
+def _file_seconds(path: str) -> float | None:
+    """Length of an audio file in seconds (read with the bundled ffmpeg), or None."""
+    r = _run_ff(["-i", path])
+    if r is None:
+        return None
+    text = (r.stderr or b"").decode("utf-8", errors="replace")
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if not m:
+        return None
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+
+def _expected_seconds(song: str) -> float | None:
+    """The real length of the song, from Spotify / Apple details or an iTunes lookup (None if unknown)."""
+    meta = meta_for(song)
+    dur = meta.get("duration")
+    if not dur and meta.get("artist"):
+        try:
+            it = itunes_lookup(meta["artist"], meta.get("title") or "", song)
+        except Exception:
+            it = None
+        dur = (it or {}).get("duration")
+    try:
+        return float(dur) if dur else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _bandcamp_wrong_length(out_dir: str, safe: str, song: str, log) -> bool:
+    """True (and the file is deleted) when the downloaded Bandcamp track is clearly a different version
+    of the song (remix, edit, slowed, live ...) judging by its length. Unknown lengths are accepted."""
+    path = os.path.join(out_dir, f"{safe}.mp3")
+    if not os.path.isfile(path):
+        return False
+    want = _expected_seconds(song)
+    got = _file_seconds(path)
+    if not want or not got:
+        return False
+    if abs(got - want) <= max(12.0, 0.05 * want):
+        return False
+    log(f"  Bandcamp copy is {_fmt_len(got)} but the real song is {_fmt_len(want)} - "
+        "probably a remix or other version, skipping it")
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    _remove_loose_images(out_dir, safe)
+    return True
+
+
 def retag_bandcamp(out_dir: str, safe: str, query: str) -> tuple[str, str]:
     """Title and artist always come from the user's line. Album / year / track: Bandcamp, then iTunes.
     Returns (album, year) for the log."""
@@ -1988,13 +2038,17 @@ def process_song(song: str, out_dir: str, opts: dict, state: dict, say, step=lam
             say(f"  -> Bandcamp: {res['url']}")
             step("Downloading from Bandcamp\u2026")
             if download_bandcamp_mp3(res["url"], song, out_dir, say):
-                step("Looking up album info\u2026")
-                album, year = retag_bandcamp(out_dir, safe, song)
-                return {"status": "ok", "source": "Bandcamp", "path": existing_song(out_dir, safe) or "",
-                        "note": "Bandcamp" + (f" \u00b7 {_fmt_album(album, year)}" if album or year else "")}
-            if STOP_EVENT.is_set():
-                return {"status": "fail", "source": None, "note": "stopped"}
-            bc_note = " (Bandcamp download failed)"
+                if _bandcamp_wrong_length(out_dir, safe, song, say):
+                    bc_note = " (Bandcamp copy was a different version)"
+                else:
+                    step("Looking up album info\u2026")
+                    album, year = retag_bandcamp(out_dir, safe, song)
+                    return {"status": "ok", "source": "Bandcamp", "path": existing_song(out_dir, safe) or "",
+                            "note": "Bandcamp" + (f" \u00b7 {_fmt_album(album, year)}" if album or year else "")}
+            else:
+                if STOP_EVENT.is_set():
+                    return {"status": "fail", "source": None, "note": "stopped"}
+                bc_note = " (Bandcamp download failed)"
         elif res.get("error"):
             state["bc_errors"] = state.get("bc_errors", 0) + 1
             say(f"  -> Bandcamp search failed: {res['error']}")
