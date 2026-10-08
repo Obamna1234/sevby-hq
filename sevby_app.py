@@ -3922,7 +3922,6 @@ class SevbyApp(_SevbyBase):
         self._apply_icon(dlg)
         dlg.resizable(False, False)
         dlg.transient(self)
-        dlg.grab_set()
         w, h = 500, 560
         self.update_idletasks()
         x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
@@ -3946,14 +3945,20 @@ class SevbyApp(_SevbyBase):
                       text_color=C_ON_ACCENT, command=accept).pack(side="left", padx=(0, 8))
         ctk.CTkButton(row, text="Keep it off", width=110, fg_color=C_SURFACE, hover_color="#2a2a30",
                       text_color=C_TEXT, command=dlg.destroy).pack(side="left")
+        self._grab(dlg)
         dlg.focus_set()
         self.wait_window(dlg)
         return result["ok"]
 
     def _on_free_toggle(self):
         """Ticking the box shows the notice first; if it is not accepted the box is cleared again."""
-        if self.free_hq.get() and not self.show_free_notice():
-            self.free_hq.set(False)
+        if self.free_hq.get():
+            try:
+                accepted = self.show_free_notice()
+            except Exception:
+                accepted = False
+            if not accepted:
+                self.free_hq.set(False)
         self._save_prefs()
 
     def show_client_id_help(self):
@@ -3963,7 +3968,6 @@ class SevbyApp(_SevbyBase):
         self._apply_icon(dlg)
         dlg.resizable(False, False)
         dlg.transient(self)
-        dlg.grab_set()
 
         w, h = 470, 480
         self.update_idletasks()
@@ -4020,7 +4024,27 @@ class SevbyApp(_SevbyBase):
         ctk.CTkButton(frame, text="OK", width=100, command=dlg.destroy).pack(
             pady=(14, 0)
         )
+        self._grab(dlg)
         dlg.focus_set()
+
+    def _grab(self, dlg):
+        """Make a dialog modal. On Linux (X11) grab_set fails if the window is not on screen yet, so wait for it
+        and never let a failed grab break the dialog."""
+        try:
+            dlg.update_idletasks()
+            dlg.wait_visibility()
+        except Exception:
+            pass
+        for _ in range(3):
+            try:
+                dlg.grab_set()
+                return
+            except Exception:
+                try:
+                    dlg.update()
+                    dlg.after(60)
+                except Exception:
+                    pass
 
     def load_txt(self):
         # Windows needs separate patterns so .txt files actually appear
@@ -4112,7 +4136,7 @@ class SevbyApp(_SevbyBase):
             else:
                 subprocess.Popen(["xdg-open", d])
         except Exception as e:
-            messagebox.showerror("Error", f"Could not open the folder:\n{e}")
+            messagebox.showinfo("SEVBY", f"Could not open a file manager here ({e}).\n\nYour songs are in:\n{d}")
 
     def _beep(self):
         try:
