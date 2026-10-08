@@ -170,6 +170,8 @@ Full licence details: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 SEVBY HQ is unsigned and built with PyInstaller, so some antivirus programs may flag or delay it as an unknown file. The full source code is in this repo and the release files are built automatically by the GitHub Actions workflow. You can also run it from source (see Quick start).
 
+VirusTotal scan of SEVBY HQ v0.10.0-beta (Windows), 8 October 2026: [view the report](https://www.virustotal.com/gui/file/e93750ebd585fd996818a17469f0e72ff7d56a96579e79023043b278126b0ed2). At the time of the scan, 2 of 69 engines flagged it (generic detections from smaller vendors: Bkav Pro and McAfee Scanner). Microsoft, Kaspersky, ESET, Sophos, Symantec, Malwarebytes, Trend Micro and the other major engines did not. Scanners update their detections over time, so results can change. The report is for that exact file: every new build is a new file, so if the download on the Releases page has been rebuilt since, its result can differ. To check a download yourself, upload it to <https://www.virustotal.com>.
+
 ## Where the music comes from (and what SEVBY HQ does not do)
 
 SEVBY HQ only downloads from Bandcamp, YouTube and, if you turn it on, Jamendo and the Internet Archive. It does not use torrents, file-sharing networks or ripping groups, and it will not be extended to. There are two reasons:
