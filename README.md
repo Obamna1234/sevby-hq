@@ -6,7 +6,7 @@
 
 <p align="center">
 <img width="754" height="928" alt="image" src="https://github.com/user-attachments/assets/af7d0cfd-2b37-4e0c-8470-493c81cdbc8f" />
-<br><em>SEVBY HQ v0.10.0-beta importing a .txt file playlist
+<br><em>SEVBY HQ v0.10.0-beta importing a .txt file playlist</em>
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 <p align="center">
 <img width="758" height="929" alt="image" src="https://github.com/user-attachments/assets/9c9a522d-7340-40b2-860f-e91c613d6a5e" />
-<br><em>SEVBY HQ v0.10.0-beta UI for pasting a Spotify URL playlist and the Client ID "What is this" pop up window
+<br><em>SEVBY HQ v0.10.0-beta UI for pasting a Spotify URL playlist and the Client ID "What is this" pop up window</em>
 </p>
 
 <p align="center">
@@ -172,4 +172,4 @@ SEVBY HQ is unsigned and built with PyInstaller, so some antivirus programs may 
 
 ## Disclaimer
 
-SEVBY HQ is a tool for personal use. Only download music you have the right to download, such as music you own, that is free to download, or that the artist allows. Downloading copyrighted material without permission may be illegal where you live, and may break the terms of service of YouTube, Bandcamp or Spotify. You are responsible for how you use it. SEVBY HQ is not affiliated with or endorsed by Spotify, Bandcamp, YouTube or Google. The software is provided "as is", without warranty (see [LICENSE](LICENSE)).
+SEVBY HQ is a tool for personal use. Only download music you have the right to download, such as music you own, that is free to download, or that the artist allows. Downloading copyrighted material without permission may be illegal where you live, and may break the terms of service of YouTube, Bandcamp or Spotify. You are responsible for how you use it. SEVBY HQ is not affiliated with or endorsed by Spotify, Bandcamp, YouTube or Google. SEVBY HQ is an independent open-source project and is not affiliated with Sevby LLC (sevby.com). The software is provided "as is", without warranty (see LICENSE).
