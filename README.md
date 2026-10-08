@@ -1,8 +1,8 @@
-***Beta: only lightly tested. Windows is the best-tested build. Linux/Mac builds and the Android (Termux) version are untested or lightly tested.***
+***Beta: only lightly tested. Windows is the best-tested build. Linux was lightly tested on Ubuntu (WSL2); the macOS build and the Android (Termux) version are untested or lightly tested.***
 
 # SEVBY HQ: Playlist to M4A / MP3
 
-*Screenshots show **SEVBY HQ** (gold theme) on Windows. Linux and macOS look similar. The green version is the [original SEVBY](https://github.com/Obamna1234/sevby).*
+*Screenshots show **SEVBY HQ** (gold theme) on Windows. Linux was tested on Ubuntu (via WSL2) and macOS is untested, so they may look slightly different. The green version is the [original SEVBY](https://github.com/Obamna1234/sevby).*
 
 <p align="center">
 <img width="754" height="928" alt="image" src="https://github.com/user-attachments/assets/af7d0cfd-2b37-4e0c-8470-493c81cdbc8f" />
@@ -26,7 +26,7 @@
 
 <p align="center">
 <img width="756" height="928" alt="image" src="https://github.com/user-attachments/assets/b42550a6-4714-449f-b789-bb31766a864a" />
-<br><em>SEVBY HQ v0.10.0-beta exporting a Apple Music playlist URL to .txt &amp; automatically pasting into the text box</em>
+<br><em>SEVBY HQ v0.10.0-beta exporting an Apple Music playlist URL to .txt &amp; automatically pasting into the text box</em>
 </p>
 
 <p align="center">
@@ -66,7 +66,7 @@ For each song, in this order:
 
 - **FLAC is the exception, not the rule.** SEVBY HQ only gets FLAC if you have turned on the free sources *and* a song is on **Jamendo** or the **Internet Archive** with a Creative Commons label *and* that copy is lossless. That is a small slice of music, mostly independent artists. For most songs (anything commercial or mainstream) expect Bandcamp's 128 kbps stream or YouTube's M4A instead. In a typical playlist, few or none of the songs will come as FLAC.
 - Jamendo needs your own free Client ID (see below), and some artists switch downloads off. SEVBY HQ asks Jamendo for FLAC first and falls back to a high-bitrate MP3 if FLAC isn't offered. I have not been able to test every case, and Jamendo may require a logged-in account to serve FLAC files, in which case you would get the MP3 instead. The log always says which one you got.
-- Free lossless files exist only for music released under Creative Commons. Everything else is limited by what Bandcamp's free stream and YouTube offer:
+- Free lossless files exist only for music released under Creative Commons. Everything else is limited by what Bandcamp's free stream and YouTube offer.
 - Bandcamp's free stream and YouTube audio are only about **128-160 kbps**. SEVBY HQ keeps them as they are rather than re-encoding, which avoids losing a little more quality. It **cannot make them better** than they started.
 - Real high quality (FLAC or 320 kbps) means buying the music. After each run, HQ writes `SEVBY HQ - find better quality.txt` into your music folder with search links (Bandcamp, Qobuz, 7digital) for the songs that came from YouTube. Buying from the artist on Bandcamp is the best way to support them.
 - Spotify is not used for audio, only for reading a playlist's song names.
@@ -90,7 +90,7 @@ For each song, in this order:
 
 ## Quick start
 
-Download the zip for your system from the **Releases** page, unzip it and run it. Or run from source:
+Download the zip for your system from the **Releases** page, unzip it and run it. On Linux or macOS you may need to make the file executable first (`chmod +x SEVBY-HQ`). Or run from source:
 
 ```bash
 pip install -r requirements.txt
@@ -108,7 +108,7 @@ SEVBY HQ needs a list of songs. The simplest is a text file with one `Artist - T
 | Where your music lives | How to get a list |
 |---|---|
 | **Spotify** | Export with [Chosic](https://www.chosic.com/spotify-playlist-exporter/) (works with any account), or paste the playlist link if you have your own Spotify Client ID (see below) |
-| **Apple Music** (iPhone, Mac or Windows) | In Apple Music open the playlist, tap **Share > Copy Link**, then in SEVBY HQ press **Apple Music** and paste the link. No sign-in needed. It only works for playlists anyone can open (not private ones), and it reads Apple's public web page, so it could stop working if Apple changes that page (I have not been able to test it against Apple's live site). Alternatives: on a Mac or in the Apple Music / iTunes app on Windows choose **File > Library > Export Playlist** and save as **Text**, or use a converter such as [TuneMyMusic](https://www.tunemymusic.com/) (needs you to sign in to Apple Music) |
+| **Apple Music** (iPhone, Mac or Windows) | In Apple Music open the playlist, tap **Share > Copy Link**, then in SEVBY HQ press **Apple Music** and paste the link. No sign-in needed. It only works for playlists anyone can open (not private ones), and it reads Apple's public web page, so it could stop working if Apple changes that page. Alternatives: on a Mac or in the Apple Music / iTunes app on Windows choose **File > Library > Export Playlist** and save as **Text**, or use a converter such as [TuneMyMusic](https://www.tunemymusic.com/) (needs you to sign in to Apple Music) |
 | **YouTube Music, Tidal, Qobuz, Deezer** and others | A converter like TuneMyMusic or [Soundiiz](https://soundiiz.com/) can export a playlist to a file. Check that the one you use supports your service |
 | **A folder of music files, foobar2000, MusicBee, Plex** | Export a playlist as **M3U** from your player, or type the songs in |
 | **A wish list** (Bandcamp, Discogs, Last.fm, notes app) | Copy the names into a text file, one `Artist - Title` per line |
