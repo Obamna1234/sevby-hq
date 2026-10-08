@@ -170,6 +170,15 @@ Full licence details: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 SEVBY HQ is unsigned and built with PyInstaller, so some antivirus programs may flag or delay it as an unknown file. The full source code is in this repo and the release files are built automatically by the GitHub Actions workflow. You can also run it from source (see Quick start).
 
+## Where the music comes from (and what SEVBY HQ does not do)
+
+SEVBY HQ only downloads from Bandcamp, YouTube and, if you turn it on, Jamendo and the Internet Archive. It does not use torrents, file-sharing networks or ripping groups, and it will not be extended to. There are two reasons:
+
+- **Legal:** SEVBY HQ is meant for music you own, that is free to download, or that the artist allows. Pirated copies are none of those.
+- **Safety:** files from unknown sources are a common way to spread malware, such as programs disguised as audio ("Song.flac.exe"), fake "codec" installers and tampered archives. SEVBY HQ only saves audio files and tags them. It never runs a downloaded file as a program.
+
+This lowers the risk but doesn't remove it. Keep your antivirus and system up to date, and be careful with any music from sources you don't know.
+
 ## Disclaimer
 
 SEVBY HQ is a tool for personal use. Only download music you have the right to download, such as music you own, that is free to download, or that the artist allows. Downloading copyrighted material without permission may be illegal where you live, and may break the terms of service of YouTube, Bandcamp or Spotify. You are responsible for how you use it. SEVBY HQ is not affiliated with or endorsed by Spotify, Bandcamp, YouTube or Google. SEVBY HQ is an independent open-source project and is not affiliated with Sevby LLC (sevby.com). The software is provided "as is", without warranty (see LICENSE).
