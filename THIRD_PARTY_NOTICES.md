@@ -20,6 +20,12 @@ FFmpeg is a trademark of Fabrice Bellard. SEVBY HQ includes an unmodified FFmpeg
 - **Windows build:** FFmpeg git build 2026-10-01 (essentials) from gyan.dev, https://www.gyan.dev/ffmpeg/builds/ . This build is licensed under the GNU GPL v3 (it was configured with --enable-gpl --enable-version3). Source code: https://ffmpeg.org/download.html#get-sources and the source link on the gyan.dev builds page.
 - **Linux and macOS builds:** static FFmpeg binaries fetched by the build workflow (FedericoCarboni/setup-ffmpeg). Their licences and sources are listed on the download pages linked from that project.
 
+## Also bundled in the desktop builds
+
+- **Deno** (MIT licence, https://github.com/denoland/deno): the JavaScript engine yt-dlp uses for YouTube's challenges. The build workflow downloads the official release and checks its SHA-256 before bundling it.
+- **yt-dlp-ejs** (part of yt-dlp's `[default]` extras, https://github.com/yt-dlp/ejs): YouTube challenge scripts for yt-dlp.
+- **keyring** (MIT licence, https://github.com/jaraco/keyring): stores the Spotify login in Windows Credential Manager / macOS Keychain / Linux Secret Service instead of a text file.
+
 ## Services (not bundled, not affiliated)
 
 SEVBY HQ talks to these services but is not affiliated with, endorsed by, or sponsored by any of them. Their names and trademarks belong to their owners.

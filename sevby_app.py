@@ -63,6 +63,14 @@ try:
 except Exception:
     YTDLP_ACTIVE = ""
 
+# YouTube needs a JavaScript engine (Deno) for yt-dlp; the packaged app carries one: make it findable.
+try:
+    _bundle = getattr(sys, "_MEIPASS", "")
+    if _bundle and os.path.isfile(os.path.join(_bundle, "deno.exe" if os.name == "nt" else "deno")):
+        os.environ["PATH"] = _bundle + os.pathsep + os.environ.get("PATH", "")
+except Exception:
+    pass
+
 # yt-dlp as a Python module (works inside the packaged .exe, no PATH needed)
 try:
     import yt_dlp
@@ -125,6 +133,46 @@ class _Stopped(Exception):
 
 
 # \u2500\u2500 Config helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+_SECRET_SERVICE = "SEVBY-HQ"
+_SESSION_SECRETS: dict = {}
+
+
+def secret_get(name: str) -> str:
+    """A saved secret (Spotify login / Client Secret) from the system's password store (Windows Credential Manager,
+    macOS Keychain, Linux Secret Service). Older versions kept them in ~/.sevby_config.json: they are moved over
+    the first time and removed from that file."""
+    if name in _SESSION_SECRETS:
+        return _SESSION_SECRETS[name]
+    value = ""
+    try:
+        import keyring
+        value = keyring.get_password(_SECRET_SERVICE, name) or ""
+    except Exception:
+        pass
+    cfg = load_config()
+    if name in cfg:                       # migrate from the old plain-text file
+        old = str(cfg.pop(name) or "")
+        save_config(cfg)
+        if not value and old:
+            value = old
+            secret_set(name, old)
+    _SESSION_SECRETS[name] = value
+    return value
+
+
+def secret_set(name: str, value: str) -> None:
+    """Save a secret in the system's password store; if there is none, keep it only until SEVBY closes."""
+    _SESSION_SECRETS[name] = value or ""
+    try:
+        import keyring
+        if value:
+            keyring.set_password(_SECRET_SERVICE, name, value)
+        else:
+            keyring.delete_password(_SECRET_SERVICE, name)
+    except Exception:
+        pass
+
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
@@ -632,7 +680,7 @@ def get_spotify_access_token(client_id: str, client_secret: str, log) -> str | N
     cfg = load_config()
 
     # 1) Saved refresh token (no browser needed)
-    rt = cfg.get("refresh_token")
+    rt = secret_get("refresh_token")
     if rt and cfg.get("refresh_client_id") == client_id:
         try:
             tok = _token_post(
@@ -640,8 +688,7 @@ def get_spotify_access_token(client_id: str, client_secret: str, log) -> str | N
             )
             if tok.get("access_token"):
                 if tok.get("refresh_token"):
-                    cfg["refresh_token"] = tok["refresh_token"]
-                    save_config(cfg)
+                    secret_set("refresh_token", tok["refresh_token"])
                 return tok["access_token"]
         except Exception:
             log("Saved Spotify login expired \u2014 logging in again.")
@@ -652,9 +699,9 @@ def get_spotify_access_token(client_id: str, client_secret: str, log) -> str | N
         cfg = load_config()
         cfg["client_id"] = client_id
         cfg["refresh_client_id"] = client_id
-        if tok.get("refresh_token"):
-            cfg["refresh_token"] = tok["refresh_token"]
         save_config(cfg)
+        if tok.get("refresh_token"):
+            secret_set("refresh_token", tok["refresh_token"])
         return tok["access_token"]
 
     # 3) Optional fallback: old client-credentials (public playlists only)
@@ -1668,7 +1715,11 @@ def _alt_youtube_queries(artist: str, title: str) -> list[str]:
     return out
 
 
-def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool = True) -> bool:
+def download_youtube_mp3(query: str, out_dir: str, log, use_cookies: bool | None = None) -> bool:
+    if use_cookies is None:
+        # Off unless switched on (Settings > Advanced): retrying with Chrome's sign-in ties the download to your
+        # Google account, which YouTube can flag.
+        use_cookies = bool(load_config().get("use_browser_cookies", False))
     safe = sanitize_filename(query)
     if _already_exists(out_dir, safe):
         log(f"  SKIP (exists): {safe}")
@@ -2681,12 +2732,31 @@ def download_ytdlp_update(tag: str) -> tuple[bool, str]:
         YTDLP_UPDATE_DIR.mkdir(parents=True, exist_ok=True)
         dest = YTDLP_UPDATE_DIR / "yt-dlp"
         tmp = YTDLP_UPDATE_DIR / "yt-dlp.part"
-        url = f"https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/yt-dlp"
-        req = urllib.request.Request(url, headers={"User-Agent": "SEVBY-HQ"})
+        if not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?", tag or ""):
+            return False, "GitHub gave an unexpected yt-dlp version name."
+        base = f"https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/"
+        # The checksum yt-dlp publishes with every release: the update is only installed if it matches, so a
+        # damaged or tampered download is never run.
+        with urllib.request.urlopen(urllib.request.Request(base + "SHA2-256SUMS", headers={"User-Agent": "SEVBY-HQ"}),
+                                    timeout=30) as r:
+            sums = r.read().decode("utf-8", "replace")
+        expected = next((line.split()[0].lower() for line in sums.splitlines() if line.split()[-1:] == ["yt-dlp"]), "")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            return False, "Couldn't find yt-dlp's checksum, so the update wasn't installed."
+        req = urllib.request.Request(base + "yt-dlp", headers={"User-Agent": "SEVBY-HQ"})
+        digest = hashlib.sha256()
         with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
-            shutil.copyfileobj(r, f)
+            while True:
+                block = r.read(1 << 16)
+                if not block:
+                    break
+                digest.update(block)
+                f.write(block)
         import zipfile
 
+        if digest.hexdigest() != expected:
+            tmp.unlink(missing_ok=True)
+            return False, "The downloaded yt-dlp didn't match its official checksum, so it was thrown away."
         if not zipfile.is_zipfile(tmp):
             tmp.unlink(missing_ok=True)
             return False, "The download wasn't a valid yt-dlp file. Try again later."
@@ -3057,8 +3127,9 @@ class SevbyApp(_SevbyBase):
                      "and paste it, or click Import (.txt or .csv). No Spotify account or keys needed.")
         if cfg.get("client_id"):
             self.client_id.insert(0, cfg["client_id"])
-        if cfg.get("client_secret"):
-            self.client_secret.insert(0, cfg["client_secret"])
+        saved_secret = secret_get("client_secret")
+        if saved_secret:
+            self.client_secret.insert(0, saved_secret)
 
         # -- Queue card (only when it has lists) ----------------------------------------------
         self.queue_card = ctk.CTkFrame(page, fg_color=C_SURFACE, corner_radius=10)
@@ -3555,6 +3626,14 @@ class SevbyApp(_SevbyBase):
                 self.after(0, lambda: (net_out.configure(text=text), net_btn.configure(state="normal")))
             threading.Thread(target=work, daemon=True).start()
         net_btn.configure(command=run_net)
+        use_ck = ctk.BooleanVar(value=bool(load_config().get("use_browser_cookies", False)))
+
+        def _set_cookies():
+            c = load_config()
+            c["use_browser_cookies"] = bool(use_ck.get())
+            save_config(c)
+        ctk.CTkSwitch(adv_body, text="When YouTube asks to sign in, retry with Chrome's sign-in (your Google account)",
+                      variable=use_ck, progress_color=C_ACCENT, command=_set_cookies).pack(anchor="w", pady=(10, 0))
         blocked = ctk.BooleanVar(value=DEBUG["bc_blocked"])
         ctk.CTkSwitch(adv_body, text="Pretend Bandcamp is blocked (to test the YouTube fallback)",
                       variable=blocked, progress_color=C_ACCENT,
@@ -4485,9 +4564,9 @@ class SevbyApp(_SevbyBase):
                     return
                 cfg = load_config()
                 cfg["client_id"] = cid
-                if secret:
-                    cfg["client_secret"] = secret
                 save_config(cfg)
+                if secret:
+                    secret_set("client_secret", secret)
                 self.log("Connecting to Spotify\u2026")
                 token = get_spotify_access_token(cid, secret, self.log)
                 if not token:

@@ -22,7 +22,14 @@ cmd = [
     "--name", "SEVBY-HQ",
     "--collect-all", "yt_dlp", "--collect-all", "customtkinter", "--collect-all", "tkinterdnd2",
     "--add-binary", f"{ffmpeg}{sep}.",
+    "--collect-all", "yt_dlp_ejs", "--collect-all", "keyring",
 ]
+# Deno: the JavaScript engine yt-dlp needs for YouTube (the build workflow downloads a checksum-checked copy).
+deno = "deno.exe" if os.name == "nt" else "deno"
+if os.path.isfile(deno):
+    cmd += ["--add-binary", f"{deno}{sep}."]
+else:
+    print("Note: deno not found next to build.py - YouTube may offer fewer formats without it.")
 # Icons are optional: bundle whichever ones are present next to this file.
 for f in ("sevbyicon.ico", "sevby_logo_512.png"):
     if os.path.isfile(f):

@@ -39,7 +39,31 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
-          pip install -U yt-dlp
+          pip install -U "yt-dlp[default]"
+
+      - name: Get Deno (YouTube's JavaScript engine for yt-dlp), checksum-checked
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, io, json, os, re, stat, sys, urllib.request, zipfile
+          def get(u):
+              return urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "SEVBY-CI"}), timeout=120).read()
+          target = {"win32": "x86_64-pc-windows-msvc", "darwin": "x86_64-apple-darwin"}.get(sys.platform, "x86_64-unknown-linux-gnu")
+          rel = json.loads(get("https://api.github.com/repos/denoland/deno/releases/latest"))
+          name = f"deno-{target}.zip"
+          asset = next(a for a in rel["assets"] if a["name"] == name)
+          data = get(asset["browser_download_url"])
+          expected = (asset.get("digest") or "").removeprefix("sha256:")
+          if not expected:
+              side = next(a for a in rel["assets"] if a["name"] == name + ".sha256sum")
+              expected = re.search(r"[0-9a-fA-F]{64}", get(side["browser_download_url"]).decode("utf-8", "replace")).group(0)
+          actual = hashlib.sha256(data).hexdigest()
+          assert actual.lower() == expected.lower(), f"Deno checksum mismatch: {actual} != {expected}"
+          exe = "deno.exe" if sys.platform == "win32" else "deno"
+          zipfile.ZipFile(io.BytesIO(data)).extract(exe, ".")
+          os.chmod(exe, os.stat(exe).st_mode | stat.S_IEXEC)
+          print("Deno", rel["tag_name"], "verified", actual)
+          PY
 
       - name: Build
         run: python build.py

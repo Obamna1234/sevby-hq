@@ -1,3 +1,4 @@
 customtkinter>=5.2
-yt-dlp
+yt-dlp[default]   # [default] adds yt-dlp-ejs (YouTube's JavaScript challenges)
 tkinterdnd2
+keyring           # keeps Spotify logins in the system's password store
