@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 import threading
 import time
 import urllib.error
@@ -186,6 +187,11 @@ def load_config() -> dict:
 def save_config(data: dict) -> None:
     try:
         CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # Make the file private to the current user (no-op effect on Windows, harmless).
+        try:
+            os.chmod(CONFIG_PATH, 0o600)
+        except OSError:
+            pass
     except Exception:
         pass
 
@@ -197,6 +203,10 @@ def fix_bc_url(url: str) -> str:
         return ""
     if url.count("https://") > 1:
         url = "https://" + url.split("https://")[-1]
+    # Only accept a normal web URL. A value that doesn't start with http(s):// (e.g. one
+    # beginning with "-", which yt-dlp would read as an option) is rejected outright.
+    if not url.lower().startswith(("https://", "http://")):
+        return ""
     return url
 
 
@@ -1149,7 +1159,7 @@ def _thumb_urls(info: dict | None) -> list[str]:
 def _to_jpg(src: str) -> str | None:
     if src.lower().endswith((".jpg", ".jpeg")):
         return src
-    dst = os.path.join(tempfile.gettempdir(), f"sevby_cover_{os.getpid()}.jpg")
+    dst = os.path.join(tempfile.gettempdir(), f"sevby_cover_{uuid.uuid4().hex}.jpg")
     r = _run_ff(["-y", "-i", src, "-q:v", "2", dst])
     return dst if r is not None and r.returncode == 0 and os.path.isfile(dst) else None
 
@@ -1171,7 +1181,7 @@ def _find_or_fetch_cover(out_dir: str, safe: str, info: dict | None) -> str | No
         if len(data) < 1000:
             continue
         ext = ".webp" if data[:4] == b"RIFF" else (".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg")
-        tmp = os.path.join(tempfile.gettempdir(), f"sevby_thumb_{os.getpid()}{ext}")
+        tmp = os.path.join(tempfile.gettempdir(), f"sevby_thumb_{uuid.uuid4().hex}{ext}")
         try:
             with open(tmp, "wb") as f:
                 f.write(data)
@@ -1288,7 +1298,9 @@ def _run_ytdlp_cli(
     if embed:
         cmd += ["--embed-thumbnail", "--embed-metadata", "--convert-thumbnails", "jpg"]
     cmd += [
-        "-o", out_template, target,
+        # "--" marks the end of options so a URL that begins with "-" can never be
+        # parsed as a yt-dlp flag (defence against a crafted/MITM'd source URL).
+        "-o", out_template, "--", target,
     ]
     loc = _ffmpeg_location()
     if loc:
@@ -1388,7 +1400,7 @@ def _crop_box(src: str) -> tuple[int, int, int, int, int, int] | None:
 def _square_jpg(src: str) -> str | None:
     """Make a square cover from a video thumbnail: trim black bars that are the same on both sides,
     then crop the centre square if the picture is nearly square, else show it whole on a black square."""
-    dst = os.path.join(tempfile.gettempdir(), f"sevby_square_{os.getpid()}.jpg")
+    dst = os.path.join(tempfile.gettempdir(), f"sevby_square_{uuid.uuid4().hex}.jpg")
     vf = []
     box = _crop_box(src)
     cw = ch = None
@@ -1428,7 +1440,7 @@ def _fetch_image(url: str) -> str | None:
     if len(data) < 1000:
         return None
     ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else (".webp" if data[:4] == b"RIFF" else ".jpg")
-    tmp = os.path.join(tempfile.gettempdir(), f"sevby_cover_dl_{os.getpid()}{ext}")
+    tmp = os.path.join(tempfile.gettempdir(), f"sevby_cover_dl_{uuid.uuid4().hex}{ext}")
     try:
         with open(tmp, "wb") as f:
             f.write(data)
