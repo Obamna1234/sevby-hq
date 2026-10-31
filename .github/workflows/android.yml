@@ -1,0 +1,58 @@
+name: Build SEVBY HQ Android APK
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    env:
+      SEVBYHQ_KEYSTORE_BASE64: ${{ secrets.SEVBYHQ_KEYSTORE_BASE64 }}
+      SEVBYHQ_KEYSTORE_PASSWORD: ${{ secrets.SEVBYHQ_KEYSTORE_PASSWORD }}
+      SEVBYHQ_KEY_ALIAS: ${{ secrets.SEVBYHQ_KEY_ALIAS }}
+      SEVBYHQ_KEY_PASSWORD: ${{ secrets.SEVBYHQ_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Version
+        run: |
+          echo "SEVBYHQ_VERSION_NAME=0.10.1-beta.dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "SEVBYHQ_VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+      - name: Signing key (from repo secrets, if set)
+        run: |
+          if [ -n "$SEVBYHQ_KEYSTORE_BASE64" ]; then
+            echo "$SEVBYHQ_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/sevbyhq.jks"
+            echo "SEVBYHQ_KEYSTORE=$RUNNER_TEMP/sevbyhq.jks" >> "$GITHUB_ENV"
+            echo "Signing with the SEVBY HQ release key"
+          else
+            echo "::warning::No SEVBYHQ_KEYSTORE_BASE64 secret - the APK is signed with a throwaway debug key. Add the 4 SEVBYHQ_KEYSTORE_* / SEVBYHQ_KEY_* secrets to this repo for a real release build."
+          fi
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+      - name: Name the APKs
+        run: |
+          mkdir -p ../out
+          for f in app/build/outputs/apk/release/*.apk; do
+            abi=$(basename "$f" | sed -E 's/^app-(.*)-release(-unsigned)?\.apk$/\1/')
+            cp "$f" "../out/SEVBY-HQ-${SEVBYHQ_VERSION_NAME}-${abi}.apk"
+          done
+          ls -l ../out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SEVBY-HQ-android-${{ env.SEVBYHQ_VERSION_NAME }}
+          path: out/*.apk
+          if-no-files-found: error
