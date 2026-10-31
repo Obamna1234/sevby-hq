@@ -108,7 +108,7 @@ if os.name == "nt":
     except Exception:
         pass
 
-VERSION = "0.10.0-beta"
+VERSION = "0.10.1-beta"
 APP_NAME = "SEVBY HQ"
 CONFIG_PATH = Path.home() / ".sevby_hq_config.json"
 LOG_PATH = Path.home() / ".sevby_hq_log.txt"  # copy of the last run's log, handy for bug reports

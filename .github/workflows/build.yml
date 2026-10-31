@@ -8,6 +8,7 @@ on:
         type: boolean
         default: false
   push:
+    branches: ["main"]
     tags: ["v*"]
   schedule:
     - cron: "0 3 1 * *"   # 1st of every month, 03:00 UTC
@@ -106,3 +107,48 @@ jobs:
           gh release view "$tag" --json body --jq .body | grep -v '^Last automatic rebuild:' > notes.md || true
           printf '\nLast automatic rebuild: %s (with the newest yt-dlp at that time)\n' "$(date -u +%F)" >> notes.md
           gh release edit "$tag" --notes-file notes.md
+
+  # On a push to main where the app's VERSION has no release yet: publish a GitHub Release
+  # tagged v<VERSION> with the three desktop builds attached (CI creates the tag + release).
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide whether to release (new VERSION, no existing tag)
+        id: decide
+        run: |
+          V=$(grep -m1 '^VERSION = ' sevby_app.py | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "refs/tags/v$V" | grep -q .; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "v$V already released - nothing to do"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.decide.outputs.go == 'true'
+        with:
+          path: artifacts
+      - name: Zip each build
+        if: steps.decide.outputs.go == 'true'
+        run: |
+          for d in artifacts/SEVBY-HQ-*; do
+            name=$(basename "$d")
+            (cd "$d" && zip -r -q "../../$name.zip" .)
+          done
+          ls -l *.zip
+      - name: Create the release
+        if: steps.decide.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          V="${{ steps.decide.outputs.version }}"
+          [ -f RELEASE_NOTES.md ] || printf 'SEVBY HQ v%s\n' "$V" > RELEASE_NOTES.md
+          gh release create "v$V" --target "$GITHUB_SHA" --title "SEVBY HQ v$V" \
+            --notes-file RELEASE_NOTES.md \
+            SEVBY-HQ-Windows.zip SEVBY-HQ-Linux.zip SEVBY-HQ-macOS.zip
