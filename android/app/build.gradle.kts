@@ -5,7 +5,7 @@ plugins {
 
 // Release signing comes from environment variables (set by the GitHub workflow from repo secrets).
 // If they are missing (e.g. a local build in Android Studio), release builds use the debug key.
-val ksFile = System.getenv("SEVBY_KEYSTORE")
+val ksFile = System.getenv("SEVBYHQ_KEYSTORE")
 val hasReleaseKey = !ksFile.isNullOrBlank() && file(ksFile).exists()
 
 android {
@@ -16,8 +16,8 @@ android {
         applicationId = "io.github.obamna1234.sevbyhq"
         minSdk = 24
         targetSdk = 34
-        versionCode = (System.getenv("SEVBY_VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("SEVBY_VERSION_NAME") ?: "0.10.1-beta"
+        versionCode = (System.getenv("SEVBYHQ_VERSION_CODE") ?: "1").toInt()
+        versionName = System.getenv("SEVBYHQ_VERSION_NAME") ?: "0.10.1-beta"
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
@@ -28,9 +28,9 @@ android {
         if (hasReleaseKey) {
             create("release") {
                 storeFile = file(ksFile!!)
-                storePassword = System.getenv("SEVBY_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("SEVBY_KEY_ALIAS")
-                keyPassword = System.getenv("SEVBY_KEY_PASSWORD")
+                storePassword = System.getenv("SEVBYHQ_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SEVBYHQ_KEY_ALIAS")
+                keyPassword = System.getenv("SEVBYHQ_KEY_PASSWORD")
             }
         }
     }
