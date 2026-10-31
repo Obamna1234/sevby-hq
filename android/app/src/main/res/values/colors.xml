@@ -1,0 +1,13 @@
+<resources>
+    <color name="bg">#141416</color>
+    <color name="surface">#1E1E22</color>
+    <color name="text">#F2F2F2</color>
+    <color name="muted">#9A9AA2</color>
+    <color name="accent">#34E58A</color>
+    <color name="on_accent">#0B1F14</color>
+    <color name="error">#FF6B6B</color>
+    <color name="stop_red">#E5484D</color>
+    <!-- Dark-green "tonal" buttons (Import / Chosic / Apple Music), so Start Download stays the bright one -->
+    <color name="tonal">#1F3A2B</color>
+    <color name="tonal_sub">#9FDCBC</color>
+</resources>
