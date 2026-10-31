@@ -19,6 +19,26 @@ were then made here (SEVBY got the same ones). If you build on SEVBY later, keep
 
 Not changed: the release setup. No secrets are committed in this repository.
 
+## Follow-up hardening (31 October 2026)
+
+A second pass added small, behaviour-preserving fixes (shared with SEVBY):
+
+1. **yt-dlp option-injection guard.** `_run_ytdlp_cli()` now places a `--` end-of-options marker before the
+   target URL, and `fix_bc_url()` rejects any value that isn't a normal `http(s)://` URL (CWE-88). Normal
+   downloads are unchanged.
+2. **Config file is user-private.** `save_config()` now sets `~/.sevby_hq_config.json` to `0600` after
+   writing (CWE-276). No effect on Windows.
+3. **Unpredictable temp file names.** Cover/thumbnail temp files use a random token instead of the process
+   id (CWE-377).
+
+**HQ-specific note (not a code change yet):** the "Free HQ" sources (Jamendo + Internet Archive) fetch files
+from URLs supplied in remote metadata. This is a blind-SSRF *surface* (the fetched bytes are only checked as
+audio, never returned), and local filenames are sanitised so there is no arbitrary write. Adding a host
+allow-list + blocking redirects to private IP ranges is recommended as a later hardening step; it needs the
+list of CDN/host names the app legitimately uses, so it is deferred rather than guessed.
+
+These are low/medium-severity hardening items; no critical or high issues were found in the review.
+
 ## Reporting a problem
 
 Open an issue on GitHub (without personal data), or contact the repository owner.
