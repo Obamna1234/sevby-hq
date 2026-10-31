@@ -1,15 +1,17 @@
-## What's new in v0.10.1-beta (security hardening)
+## What's new in v0.10.2-beta
 
-Small, behaviour-preserving security fixes from the October 2026 code review (shared with SEVBY). **No feature changes.**
+**All operating systems in one release** — the Windows, Linux and macOS builds **and** the Android APK
+are now attached together below.
 
-- yt-dlp option-injection guard + URL validation.
-- Config file kept private to your user account.
-- Unpredictable temporary cover/thumbnail file names.
-
-No critical or high-severity issues were found. See `SECURITY.md` (incl. a note on the Free-HQ Jamendo/Internet Archive fetch surface). Earlier releases remain as fallbacks.
+No app changes from v0.10.1-beta beyond that; same October 2026 security hardening. Earlier releases remain
+as fallbacks.
 
 ---
 
 ## Install (Windows / Linux / macOS)
+Under **Assets**, download **SEVBY-HQ-Windows.zip**, **SEVBY-HQ-Linux.zip**, or **SEVBY-HQ-macOS.zip**,
+extract, and run the SEVBY HQ program inside. On Windows use More info → Run anyway; on macOS right-click → Open the first time.
 
-Under **Assets**, download **SEVBY-HQ-Windows.zip**, **SEVBY-HQ-Linux.zip**, or **SEVBY-HQ-macOS.zip**, extract, and run the SEVBY HQ program inside. On Windows use More info → Run anyway; on macOS right-click → Open the first time.
+## Install (Android)
+Under **Assets**, download **`SEVBY-HQ-…-arm64-v8a.apk`** (most phones) or `…-universal.apk`, open it,
+allow installing unknown apps if prompted, then **Install**.
