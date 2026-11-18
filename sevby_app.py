@@ -108,7 +108,7 @@ if os.name == "nt":
     except Exception:
         pass
 
-VERSION = "0.10.2-beta"
+VERSION = "0.10.3-beta"
 APP_NAME = "SEVBY HQ"
 CONFIG_PATH = Path.home() / ".sevby_hq_config.json"
 LOG_PATH = Path.home() / ".sevby_hq_log.txt"  # copy of the last run's log, handy for bug reports
@@ -183,13 +183,15 @@ class _Config(dict):
     _orig: dict = {}
 
 
-def _read_config_file() -> dict:
+def _read_config_file(strict: bool = False) -> dict | None:
+    """The settings file as a dict ({} if there is none). With strict=True, None if it exists but can't be
+    read right now (locked by antivirus, bad JSON...), so a save doesn't mistake it for empty."""
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            return data if isinstance(data, dict) else ({} if not strict else None)
         except Exception:
-            pass
+            return None if strict else {}
     return {}
 
 
@@ -205,8 +207,9 @@ def save_config(data: dict) -> None:
     now, so the window, the worker and the update checks can't undo each other's changes. Written in one
     go (temp file + rename), private to this user from the start, so it can never be left half-written."""
     with _CONFIG_LOCK:
-        if isinstance(data, _Config):
-            out = _read_config_file()
+        current = _read_config_file(strict=True) if isinstance(data, _Config) else None
+        if current is not None:
+            out = current
             orig = data._orig
             for k in set(orig) | set(data):
                 if k not in data:
@@ -215,7 +218,7 @@ def save_config(data: dict) -> None:
                     out[k] = data[k]
             data._orig = json.loads(json.dumps(dict(data)))
         else:
-            out = dict(data)
+            out = dict(data)   # a plain dict, or the file couldn't be read: write what the caller has (as before)
         if isinstance(out.get("queue"), list):   # Spotify secrets live in the password store, never here
             out["queue"] = [{k: v for k, v in j.items() if k != "secret"} if isinstance(j, dict) else j
                             for j in out["queue"]]
@@ -1008,6 +1011,8 @@ def fetch_apple_playlist(url: str) -> tuple[str, list[str]]:
     """(name, ['Artist - Title', ...]) for a shared Apple Music playlist or album link.
     Only works for links anyone can open (Share > Copy Link). Raises ValueError with a plain message."""
     url = (url or "").strip().split()[0] if (url or "").strip() else ""
+    if url.lower().startswith("http://"):
+        url = "https://" + url[7:]
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
     if not url.lower().startswith("https://") or not (host == "music.apple.com" or host.endswith(".music.apple.com")):
         raise ValueError("That doesn't look like an Apple Music link (it should start with https://music.apple.com).")
@@ -1074,7 +1079,7 @@ def sanitize_filename(name: str) -> str:
     name = re.sub(r"[\x00-\x1f\x7f]", " ", name)          # control characters (Windows refuses them)
     name = re.sub(r"\s+", " ", name).strip()[:180]
     # Most systems allow 255 *bytes* per name; leave room for ".sevby-tmp.flac" / ".webm.part".
-    while len(name.encode("utf-8")) > 200:
+    while len(name.encode("utf-8", "surrogatepass")) > 200:
         name = name[:-1]
     name = name.rstrip(". ")                                 # Windows drops trailing dots and spaces
     if name.split(".")[0].upper() in _WIN_RESERVED:          # CON, NUL, COM1 ... are devices on Windows
@@ -2430,13 +2435,23 @@ def _seconds(v) -> float | None:
     return total or None
 
 
+_SAME_RECORDING_RE = re.compile(
+    r"\b(album|single|mono|stereo|lp|remaster(ed)?|original)\s+(version|edit|mix)\b|\bradio\s+edit\b", re.I)
+
+
+def _real_versions(title: str) -> set[str]:
+    """Version words that mean a different recording (live, remix...); "Album Version", "Radio Edit",
+    "Single Version" and "Remastered" are the same song."""
+    return version_set(_SAME_RECORDING_RE.sub(" ", title or ""))
+
+
 def _same_song(c_title, c_artist, c_dur, title: str, artist: str, dur) -> bool:
     """Strict check so a wrong song is never taken: same title, same version (live / remix / ...),
     same artist, similar length."""
     c_title, c_artist = _text(c_title), _text(c_artist)
     if not _norm(c_title) or _norm(c_title) != _norm(title):
         return False
-    if version_set(c_title) != version_set(title):     # "Song (Live)" is not "Song"
+    if _real_versions(c_title) != _real_versions(title):     # "Song (Live)" is not "Song"
         return False
     if artist:
         aw = set(_words(artist))

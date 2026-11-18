@@ -124,10 +124,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Decide whether to release (new VERSION, no existing tag)
         id: decide
+        env:
+          HAS_KEY: ${{ secrets.SEVBYHQ_KEYSTORE_BASE64 != '' && 'yes' || '' }}
         run: |
           V=$(grep -m1 '^VERSION = ' sevby_app.py | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          if git ls-remote --tags origin "refs/tags/v$V" | grep -q .; then
+          if git ls-remote --tags origin "refs/tags/v$V" | grep -q . \
+             && { [ -z "$HAS_KEY" ] || git ls-remote --tags origin "refs/tags/android-v$V" | grep -q .; }; then
             echo "go=false" >> "$GITHUB_OUTPUT"
             echo "v$V already released - nothing to do"
           else
