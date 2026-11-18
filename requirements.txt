@@ -1,4 +1,6 @@
-customtkinter>=5.2
+# Pinned to the versions the last working builds used; yt-dlp stays unpinned on purpose
+# (it must be the newest to keep YouTube / SoundCloud working).
+customtkinter==6.0.0
 yt-dlp[default]   # [default] adds yt-dlp-ejs (YouTube's JavaScript challenges)
-tkinterdnd2
-keyring           # keeps Spotify logins in the system's password store
+tkinterdnd2==0.7.0
+keyring==25.7.0   # keeps Spotify logins in the system's password store

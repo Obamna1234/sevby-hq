@@ -8,19 +8,25 @@ on:
     paths: ["android/**", ".github/workflows/android.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   apk:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: android
+    # Signing secrets only for builds of main and android-v… tags; other branches / PRs use a debug key.
     env:
-      SEVBYHQ_KEYSTORE_BASE64: ${{ secrets.SEVBYHQ_KEYSTORE_BASE64 }}
-      SEVBYHQ_KEYSTORE_PASSWORD: ${{ secrets.SEVBYHQ_KEYSTORE_PASSWORD }}
-      SEVBYHQ_KEY_ALIAS: ${{ secrets.SEVBYHQ_KEY_ALIAS }}
-      SEVBYHQ_KEY_PASSWORD: ${{ secrets.SEVBYHQ_KEY_PASSWORD }}
+      SEVBYHQ_KEYSTORE_BASE64: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/android-v')) && github.event_name != 'pull_request' && secrets.SEVBYHQ_KEYSTORE_BASE64 || '' }}
+      SEVBYHQ_KEYSTORE_PASSWORD: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/android-v')) && github.event_name != 'pull_request' && secrets.SEVBYHQ_KEYSTORE_PASSWORD || '' }}
+      SEVBYHQ_KEY_ALIAS: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/android-v')) && github.event_name != 'pull_request' && secrets.SEVBYHQ_KEY_ALIAS || '' }}
+      SEVBYHQ_KEY_PASSWORD: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/android-v')) && github.event_name != 'pull_request' && secrets.SEVBYHQ_KEY_PASSWORD || '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

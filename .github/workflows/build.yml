@@ -13,6 +13,10 @@ on:
   schedule:
     - cron: "0 3 1 * *"   # 1st of every month, 03:00 UTC
 
+# Read-only by default; only the jobs that publish get write access.
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -32,14 +36,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y python3-tk
 
       - name: Get ffmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v3
+        uses: FedericoCarboni/setup-ffmpeg@36c6454b5a2348e7794ba2d82a21506605921e3d # v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install (always the newest yt-dlp)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt pyinstaller==6.22.3
           pip install -U "yt-dlp[default]"
 
       - name: Get Deno (YouTube's JavaScript engine for yt-dlp), checksum-checked
@@ -100,7 +104,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          tag=$(gh release list --limit 30 --json tagName --jq '[.[] | select(.tagName | startswith("android-") | not)][0].tagName // empty')
           if [ -z "$tag" ]; then echo "No release found - nothing to update"; exit 1; fi
           echo "Updating release $tag"
           gh release upload "$tag" SEVBY-HQ-Windows.zip SEVBY-HQ-Linux.zip SEVBY-HQ-macOS.zip --clobber
@@ -181,13 +185,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          V: ${{ steps.decide.outputs.version }}
         run: |
-          V="${{ steps.decide.outputs.version }}"
           [ -f RELEASE_NOTES.md ] || printf 'SEVBY HQ v%s\n' "$V" > RELEASE_NOTES.md
           files=(SEVBY-HQ-Windows.zip SEVBY-HQ-Linux.zip SEVBY-HQ-macOS.zip)
           shopt -s nullglob
           for a in apks/*.apk; do files+=("$a"); done
-          gh release create "v$V" --target "$GITHUB_SHA" --title "SEVBY HQ v$V" \
+          # Skip if a re-run finds the release already made (the copy below still gets made).
+          gh release view "v$V" >/dev/null 2>&1 || gh release create "v$V" --target "$GITHUB_SHA" --title "SEVBY HQ v$V" \
             --notes-file RELEASE_NOTES.md "${files[@]}"
           # Copy of the APKs as an android-v… pre-release: SEVBY HQ for Android 0.10.2-beta and earlier only
           # look for android-v… releases, so this is how those phones hear about the update.
