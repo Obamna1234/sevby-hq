@@ -232,8 +232,11 @@ object BandcampData {
                 "lt" -> "<"
                 "gt" -> ">"
                 "apos" -> "'"
-                else -> if (e.startsWith("#x")) String(Character.toChars(e.substring(2).toInt(16)))
-                        else String(Character.toChars(e.substring(1).toInt()))
+                else -> {
+                    // A broken number (too big / not a real character) is left as it was, not a crash.
+                    val cp = if (e.startsWith("#x")) e.substring(2).toIntOrNull(16) else e.substring(1).toIntOrNull()
+                    if (cp != null && Character.isValidCodePoint(cp)) String(Character.toChars(cp)) else m.value
+                }
             }
         }
 }

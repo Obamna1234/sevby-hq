@@ -342,18 +342,23 @@ class Downloader(
             log("  Couldn't create $name in the folder")
             return Saved.FAILED
         }
-        if (doc.name != null && !doc.name.equals(name, ignoreCase = true)) {
-            // Android renamed it because the name was taken after all: don't leave a duplicate.
-            runCatching { doc.delete() }
-            log("  Already in folder – kept the existing copy")
-            return Saved.ALREADY_THERE
+        val given = doc.name
+        if (given != null && !given.equals(name, ignoreCase = true)) {
+            val base = Regex.escape(name.removeSuffix(".mp3"))
+            if (Regex("""^$base \(\d+\)\.mp3$""", RegexOption.IGNORE_CASE).matches(given)) {
+                // Android added "(1)" because the name was taken after all: don't leave a duplicate.
+                runCatching { doc.delete() }
+                log("  Already in folder – kept the existing copy")
+                return Saved.ALREADY_THERE
+            }
+            log("  (Android saved it as $given)")   // it changed characters the folder can't hold
         }
         return try {
             context.contentResolver.openOutputStream(doc.uri)!!.use { out ->
                 Id3.writeTagged(mp3, tags, cover, out)
             }
             if (cover == null) log("  Note: no cover art could be found for this track.")
-            MediaLibrary.announce(context, folder.uri, name) { listed ->
+            MediaLibrary.announce(context, folder.uri, given ?: name) { listed ->
                 if (!listed && !libraryNoted) {
                     libraryNoted = true
                     log("(Note: Android's music library is slow to list new songs in this folder. Music apps that scan folders, like VLC, find them straight away; others after their next rescan.)")

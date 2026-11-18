@@ -50,7 +50,9 @@ object AppleMusic {
         } catch (e: Exception) {
             return@withContext AmResult.Failed("Couldn't reach Apple Music (${e.message ?: e.javaClass.simpleName}).")
         }
-        val list = AppleMusicData.parse(html)
+        val list = runCatching { AppleMusicData.parse(html) }.getOrElse {
+            return@withContext AmResult.Failed("Couldn't read that Apple Music page (${it.javaClass.simpleName}).")
+        }
         if (list.songs.isEmpty()) {
             AmResult.Failed(
                 "Couldn't find any songs on that page. The playlist may be private, or Apple changed its page. " +

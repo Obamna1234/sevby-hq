@@ -319,10 +319,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadTxt(uri: Uri) {
         lifecycleScope.launch {
-            val name = displayName(uri) ?: "Song list.txt"
+            val name = runCatching { displayName(uri) }.getOrNull() ?: "Song list.txt"
             val text = try {
                 withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(uri)!!.use { SongList.decode(it.readBytes()) }
+                    contentResolver.openInputStream(uri)!!.use { input ->
+                        // A song list is small: refuse anything over 5 MB instead of running out of memory.
+                        val bytes = input.readNBytesCompat(MAX_IMPORT_BYTES + 1)
+                        if (bytes.size > MAX_IMPORT_BYTES) throw java.io.IOException("the file is too big for a song list (over 5 MB)")
+                        SongList.decode(bytes)
+                    }
                 }
             } catch (e: Exception) {
                 toast("Could not read $name: ${e.message}")
@@ -821,4 +826,18 @@ class MainActivity : AppCompatActivity() {
         private const val CHOSIC_URL = "https://www.chosic.com/spotify-playlist-exporter/"
         private val ERROR_RED = Color.parseColor("#FF6B6B")
     }
+}
+
+private const val MAX_IMPORT_BYTES = 5 * 1024 * 1024
+
+/** Reads at most [limit] bytes (InputStream.readNBytes needs Android 13). */
+private fun java.io.InputStream.readNBytesCompat(limit: Int): ByteArray {
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(64 * 1024)
+    while (out.size() < limit) {
+        val n = read(buf, 0, minOf(buf.size, limit - out.size()))
+        if (n < 0) break
+        out.write(buf, 0, n)
+    }
+    return out.toByteArray()
 }

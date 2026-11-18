@@ -39,7 +39,7 @@ jobs:
           # (The internal versionCode is worked out from this name in app/build.gradle.kts.)
           V=$(grep -m1 '^VERSION = ' ../sevby_app.py | sed 's/.*"\(.*\)".*/\1/')
           core=${V%%-*}; IFS=. read -r a b c <<< "$core"
-          echo "SEVBYHQ_VERSION_NAME=$a.$b.$((c + 1))-dev.$((GITHUB_RUN_NUMBER % 200))" >> "$GITHUB_ENV"
+          echo "SEVBYHQ_VERSION_NAME=$a.$b.$((c + 1))-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
       - name: Signing key (from repo secrets, if set)
         run: |
           if [ -n "$SEVBYHQ_KEYSTORE_BASE64" ]; then

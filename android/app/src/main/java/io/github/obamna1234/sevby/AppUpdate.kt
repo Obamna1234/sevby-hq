@@ -61,6 +61,8 @@ object AppUpdate {
         return if (AppUpdateData.isNewer(v, currentVersion(context))) AppRelease(v, prefs.latestAppApk, prefs.latestAppPage) else null
     }
 
+    /** Opens an https link in the browser (anything else is refused). */
     fun open(context: Context, url: String): Boolean =
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))); true }.getOrDefault(false)
+        url.startsWith("https://") &&
+            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))); true }.getOrDefault(false)
 }

@@ -88,7 +88,7 @@ class Bandcamp(private val web: BandcampWeb) {
 
     /** A track page's data, or null if Bandcamp refused both ways of opening it. */
     private suspend fun page(url: String): BcTrack? {
-        get(url, browserUa, wantJson = false)?.let { html -> BandcampData.parseHtml(html, url)?.let { return it } }
+        get(url, browserUa, wantJson = false)?.let { html -> runCatching { BandcampData.parseHtml(html, url) }.getOrNull()?.let { return it } }
         val raw = web.read(url, BandcampWeb.TRACK_SCRIPT) ?: return null
         return runCatching {
             val o = JSONObject(raw)

@@ -38,14 +38,23 @@ object AppUpdateData {
             val assets = r.optJSONArray("assets") ?: continue
             val apks = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
                 .filter { it.optString("name").endsWith(".apk") }
-            val pick = abis.firstNotNullOfOrNull { abi -> apks.firstOrNull { it.optString("name").endsWith("-$abi.apk") } }
-                ?: apks.firstOrNull { it.optString("name").endsWith("-universal.apk") }
+            // Prefer the APK named for this release's version, then any for this phone, then universal.
+            fun named(suffix: String) = apks.firstOrNull { it.optString("name").endsWith("-$version-$suffix.apk") }
+                ?: apks.firstOrNull { it.optString("name").endsWith("-$suffix.apk") }
+            val pick = abis.firstNotNullOfOrNull { named(it) } ?: named("universal")
                 ?: continue                                    // release without APKs yet (still building)
-            val rel = AppRelease(version, pick.optString("browser_download_url"), r.optString("html_url"))
+            val apkUrl = pick.optString("browser_download_url")
+            val page = r.optString("html_url")
+            if (!isGitHubDownload(apkUrl) || !page.startsWith("https://github.com/")) continue
+            val rel = AppRelease(version, apkUrl, page)
             if (best == null || isNewer(rel.version, best.version)) best = rel
         }
         return best
     }
+
+    /** Only GitHub release downloads over https are ever offered as an update. */
+    fun isGitHubDownload(url: String): Boolean =
+        url.startsWith("https://github.com/") && "/releases/download/" in url
 
     /**
      * True if version [a] is newer than [b]. Numbers compare as numbers ("0.10.0" > "0.9.2"), and a

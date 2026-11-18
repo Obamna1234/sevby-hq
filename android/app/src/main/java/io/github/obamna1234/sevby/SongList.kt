@@ -135,9 +135,29 @@ object SongList {
     /** Same rules as the desktop app, so files get identical names on every platform. */
     fun safeFileName(name: String): String =
         name.replace(Regex("""[<>:"/\\|?*]"""), "")
+            .replace(Regex("""\p{Cntrl}"""), " ")       // Android would turn these into "_"
             .replace(Regex("""\s+"""), " ")
             .trim()
             .take(180)
+            .let(::fitBytes)
+            .trimEnd('.', ' ')
+
+    /** File names may be at most 255 bytes; keep [s] under [MAX_NAME_BYTES] so ".mp3" and "(1)" still fit. */
+    private fun fitBytes(s: String): String {
+        if (s.toByteArray(Charsets.UTF_8).size <= MAX_NAME_BYTES) return s
+        val out = StringBuilder()
+        var bytes = 0
+        var i = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            val len = String(Character.toChars(cp)).toByteArray(Charsets.UTF_8).size
+            if (bytes + len > MAX_NAME_BYTES) break
+            out.appendCodePoint(cp); bytes += len; i += Character.charCount(cp)
+        }
+        return out.toString().trim()
+    }
+
+    const val MAX_NAME_BYTES = 200
 }
 
 /**

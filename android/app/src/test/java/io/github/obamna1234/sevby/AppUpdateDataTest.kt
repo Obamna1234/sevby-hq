@@ -9,7 +9,7 @@ class AppUpdateDataTest {
 
     private fun release(tag: String, vararg apks: String, draft: Boolean = false) =
         """{"tag_name":"$tag","draft":$draft,"html_url":"https://github.com/x/y/releases/tag/$tag","assets":[""" +
-            apks.joinToString(",") { """{"name":"$it","browser_download_url":"https://dl/$it"}""" } + "]}"
+            apks.joinToString(",") { """{"name":"$it","browser_download_url":"https://github.com/Obamna1234/sevby/releases/download/$tag/$it"}""" } + "]}"
 
     private fun list(vararg r: String) = "[" + r.joinToString(",") + "]"
 
@@ -20,7 +20,7 @@ class AppUpdateDataTest {
         )
         val r = AppUpdateData.newest(json, listOf("arm64-v8a"))!!
         assertEquals("1.0.4", r.version)
-        assertEquals("https://dl/SEVBY-1.0.4-arm64-v8a.apk", r.apkUrl)
+        assertEquals("https://github.com/Obamna1234/sevby/releases/download/v1.0.4/SEVBY-1.0.4-arm64-v8a.apk", r.apkUrl)
     }
 
     @Test fun desktopOnlyReleasesAreSkipped() {
