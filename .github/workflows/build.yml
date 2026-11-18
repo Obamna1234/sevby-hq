@@ -167,7 +167,6 @@ jobs:
           SEVBYHQ_KEY_ALIAS: ${{ secrets.SEVBYHQ_KEY_ALIAS }}
           SEVBYHQ_KEY_PASSWORD: ${{ secrets.SEVBYHQ_KEY_PASSWORD }}
           SEVBYHQ_VERSION_NAME: ${{ steps.decide.outputs.version }}
-          SEVBYHQ_VERSION_CODE: ${{ github.run_number }}
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
@@ -190,3 +189,13 @@ jobs:
           for a in apks/*.apk; do files+=("$a"); done
           gh release create "v$V" --target "$GITHUB_SHA" --title "SEVBY HQ v$V" \
             --notes-file RELEASE_NOTES.md "${files[@]}"
+          # Copy of the APKs as an android-v… pre-release: SEVBY HQ for Android 0.10.2-beta and earlier only
+          # look for android-v… releases, so this is how those phones hear about the update.
+          # (The desktop app skips android… releases.)
+          apks=(apks/*.apk)
+          if [ ${#apks[@]} -gt 0 ] && ! gh release view "android-v$V" >/dev/null 2>&1; then
+            printf 'Same app as [SEVBY HQ v%s](https://github.com/%s/releases/tag/v%s) – this copy is here so older SEVBY HQ Android versions find the update.\n' \
+              "$V" "$GH_REPO" "$V" > android-notes.md
+            gh release create "android-v$V" --target "$GITHUB_SHA" --title "SEVBY HQ for Android $V" \
+              --prerelease --latest=false --notes-file android-notes.md "${apks[@]}"
+          fi

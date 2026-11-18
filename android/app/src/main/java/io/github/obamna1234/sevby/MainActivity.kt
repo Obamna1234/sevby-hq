@@ -141,7 +141,16 @@ class MainActivity : AppCompatActivity() {
         b.retryFailed.setOnClickListener { retryFailed() }
         b.about.setOnClickListener { startActivity(Intent(this, EngineCheckActivity::class.java)) }
         b.updateNow.setOnClickListener { updateYtDlp() }
-        b.appUpdateNow.setOnClickListener { AppUpdate.available(this, prefs)?.let { offerAppUpdate(it) } }
+        b.appUpdateNow.setOnClickListener {
+            // Check again first: the banner may be from this morning, and a newer release may be out since.
+            b.appUpdateNow.isEnabled = false
+            lifecycleScope.launch {
+                val rel = AppUpdate.checkDaily(this@MainActivity, prefs, force = true)
+                b.appUpdateNow.isEnabled = true
+                showAppUpdateRow()
+                if (rel != null) offerAppUpdate(rel) else toast("SEVBY is up to date")
+            }
+        }
         showAppUpdateRow()
         lifecycleScope.launch {
             AppUpdate.checkDaily(this@MainActivity, prefs)

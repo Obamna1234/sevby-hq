@@ -28,8 +28,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Version
         run: |
-          echo "SEVBYHQ_VERSION_NAME=0.10.1-beta.dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
-          echo "SEVBYHQ_VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          # Test build of the NEXT version: VERSION 0.10.2-beta in sevby_app.py -> 0.10.3-dev.<run>.
+          # It installs over the 0.10.2-beta release, and the next release later installs over it.
+          # (The internal versionCode is worked out from this name in app/build.gradle.kts.)
+          V=$(grep -m1 '^VERSION = ' ../sevby_app.py | sed 's/.*"\(.*\)".*/\1/')
+          core=${V%%-*}; IFS=. read -r a b c <<< "$core"
+          echo "SEVBYHQ_VERSION_NAME=$a.$b.$((c + 1))-dev.$((GITHUB_RUN_NUMBER % 200))" >> "$GITHUB_ENV"
       - name: Signing key (from repo secrets, if set)
         run: |
           if [ -n "$SEVBYHQ_KEYSTORE_BASE64" ]; then

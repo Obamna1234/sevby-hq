@@ -8,6 +8,28 @@ plugins {
 val ksFile = System.getenv("SEVBYHQ_KEYSTORE")
 val hasReleaseKey = !ksFile.isNullOrBlank() && file(ksFile).exists()
 
+/**
+ * Android's internal version number, worked out from the version name so it always goes up, whichever
+ * workflow built the APK: 1.0.4 → 10_004_999, 1.1.0-beta.2 → 10_100_402, 1.0.5-dev.37 → 10_005_037.
+ * A finished version beats its rc / beta / alpha / dev builds; dev builds of the next version install
+ * over the current release, and the release installs over them.
+ */
+fun versionCodeOf(name: String): Int {
+    val core = name.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
+    val pre = name.substringAfter('-', "").lowercase().split('.', '-').filter { it.isNotEmpty() }
+    val n = pre.lastOrNull()?.toIntOrNull() ?: 0
+    val suffix = when (pre.firstOrNull()) {
+        null -> 999
+        "rc" -> 800 + minOf(n, 199)
+        "beta" -> 400 + minOf(n, 399)
+        "alpha" -> 200 + minOf(n, 199)
+        else -> minOf(n, 199)                       // dev
+    }
+    return core.getOrElse(0) { 0 } * 10_000_000 + core.getOrElse(1) { 0 } * 100_000 +
+        core.getOrElse(2) { 0 } * 1_000 + suffix
+}
+val appVersionName = System.getenv("SEVBYHQ_VERSION_NAME") ?: "0.10.3-dev.0"
+
 android {
     namespace = "io.github.obamna1234.sevby"
     compileSdk = 35
@@ -16,8 +38,8 @@ android {
         applicationId = "io.github.obamna1234.sevbyhq"
         minSdk = 24
         targetSdk = 34
-        versionCode = (System.getenv("SEVBYHQ_VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("SEVBYHQ_VERSION_NAME") ?: "0.10.1-beta"
+        versionCode = versionCodeOf(appVersionName)
+        versionName = appVersionName
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")

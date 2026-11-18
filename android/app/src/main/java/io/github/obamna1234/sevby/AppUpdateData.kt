@@ -14,17 +14,27 @@ object AppUpdateData {
     const val TAG_PREFIX = "android-v"
 
     /**
-     * The newest non-draft `android-v…` release in [json] (GitHub's /releases list), with the APK for
+     * Release tags that can carry the APK: the all-OS releases (`v1.0.4`, desktop + APK together) and
+     * the older Android-only ones (`android-v1.0.0-beta.5`). Null for any other tag.
+     */
+    fun versionOf(tag: String): String? = when {
+        tag.startsWith(TAG_PREFIX) -> tag.removePrefix(TAG_PREFIX)
+        tag.length > 1 && tag[0] == 'v' && tag[1].isDigit() -> tag.substring(1)
+        else -> null
+    }
+
+    /**
+     * The newest non-draft release in [json] (GitHub's /releases list) that has APKs, with the APK for
      * the first ABI in [abis] that has one (else the universal APK). Null if there is none.
+     * Desktop-only releases (no APK attached) are skipped.
      */
     fun newest(json: String, abis: List<String>): AppRelease? {
         val arr = runCatching { JSONArray(json) }.getOrNull() ?: return null
         var best: AppRelease? = null
         for (i in 0 until arr.length()) {
             val r = arr.optJSONObject(i) ?: continue
-            val tag = r.optString("tag_name")
-            if (!tag.startsWith(TAG_PREFIX) || r.optBoolean("draft")) continue
-            val version = tag.removePrefix(TAG_PREFIX)
+            if (r.optBoolean("draft")) continue
+            val version = versionOf(r.optString("tag_name")) ?: continue
             val assets = r.optJSONArray("assets") ?: continue
             val apks = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
                 .filter { it.optString("name").endsWith(".apk") }

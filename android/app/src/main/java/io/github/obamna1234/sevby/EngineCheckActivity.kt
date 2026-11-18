@@ -49,6 +49,11 @@ class EngineCheckActivity : AppCompatActivity() {
 
         b.appUpdateButton.setOnClickListener { appUpdateClicked() }
         showAppUpdate(AppUpdate.available(this, prefs), checked = false)
+        lifecycleScope.launch {
+            // Always look again here, so this screen never offers an older release than the newest.
+            AppUpdate.checkDaily(this@EngineCheckActivity, prefs, force = true)?.let { showAppUpdate(it, checked = true) }
+                ?: showAppUpdate(AppUpdate.available(this@EngineCheckActivity, prefs), checked = prefs.lastAppCheck > 0)
+        }
         lifecycleScope.launch { checkEngine() }
     }
 
@@ -70,19 +75,18 @@ class EngineCheckActivity : AppCompatActivity() {
 
     private fun appUpdateClicked() {
         val prefs = Prefs(this)
-        val rel = AppUpdate.available(this, prefs)
-        if (rel != null) {
-            if (AppUpdate.open(this, rel.apkUrl)) toast("Downloading SEVBY ${rel.version} – open it when it's finished and tap Update")
-            else toast("No browser found to download the update")
-            return
-        }
         b.appUpdateButton.isEnabled = false
         b.appUpdateButton.text = "Checking…"
         lifecycleScope.launch {
             val before = prefs.lastAppCheck
             val found = AppUpdate.checkDaily(this@EngineCheckActivity, prefs, force = true)
             b.appUpdateButton.isEnabled = true
-            if (found == null && prefs.lastAppCheck == before) {
+            if (found != null) {
+                // Newest release (or the remembered one if GitHub can't be reached): download it.
+                showAppUpdate(found, checked = true)
+                if (AppUpdate.open(this@EngineCheckActivity, found.apkUrl)) toast("Downloading SEVBY ${found.version} – open it when it's finished and tap Update")
+                else toast("No browser found to download the update")
+            } else if (found == null && prefs.lastAppCheck == before) {
                 showAppUpdate(null, checked = false)
                 toast("Couldn't check for updates – are you online?")
             } else {

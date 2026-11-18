@@ -3,7 +3,7 @@
     <color name="surface">#1E1E22</color>
     <color name="text">#F2F2F2</color>
     <color name="muted">#9A9AA2</color>
-    <!-- SEVBY HQ gold accent (matches the desktop app's "green" CustomTkinter theme recolour to gold). -->
+    <!-- SEVBY HQ gold accent (matches the desktop app). -->
     <color name="accent">#E5B93C</color>
     <color name="on_accent">#141416</color>
     <color name="error">#FF6B6B</color>

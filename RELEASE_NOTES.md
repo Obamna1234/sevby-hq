@@ -1,10 +1,11 @@
-## What's new in v0.10.2-beta
+## What's new in v0.10.3-beta
 
-**All operating systems in one release** — the Windows, Linux and macOS builds **and** the Android APK
-are now attached together below.
+**Android**
+- SEVBY HQ for Android can now tell you about new versions: a banner on the main screen and in **About & updates**, with one tap to download. (Before, it never found HQ's releases.)
+- The update button always checks GitHub again first, so it offers the newest version.
 
-No app changes from v0.10.1-beta beyond that; same October 2026 security hardening. Earlier releases remain
-as fallbacks.
+**Windows / Linux / macOS**
+- No changes from v0.10.2-beta.
 
 ---
 
