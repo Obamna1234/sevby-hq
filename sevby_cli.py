@@ -88,7 +88,10 @@ def run_job(songs: list[str], out_dir: str, source: str) -> tuple[int, list[str]
         if sa.STOP_EVENT.is_set():
             break
         say(f"[{i}/{n}] {song}")
-        res = sa.process_song(song, out_dir, opts, state, say)
+        try:
+            res = sa.process_song(song, out_dir, opts, state, say)
+        except Exception as e:  # one broken song must not end the whole run
+            res = {"status": "fail", "note": f"error: {e}"}
         if sa.STOP_EVENT.is_set():
             break
         st = res.get("status")
@@ -150,6 +153,11 @@ def get_songs(item: str, args) -> tuple[list[str], str] | None:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):   # Windows consoles: show odd characters as "?" instead of crashing
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(description="SEVBY HQ: playlist to MP3 (command line)")
     ap.add_argument("inputs", nargs="*", help="song-list .txt files and/or Spotify playlist links")
     ap.add_argument("-o", "--out", default="", help="folder to save into")
